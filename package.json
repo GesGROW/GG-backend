@@ -1,0 +1,21 @@
+{
+  "name": "@gesgrow/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-concurrency=2 tests/*.test.js",
+    "verify:demo": "node scripts/demo/verify-quijas.mjs",
+    "verify:core": "node scripts/verify-core.mjs",
+    "pack:core": "node scripts/pack-core.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "fake-indexeddb": "6.2.5",
+    "idb": "8.0.3",
+    "@gesgrow/harvest-client-contracts": "file:vendor/gesgrow-harvest-client-contracts-0.1.0.tgz"
+  },
+  "dependencies": {
+    "@gesgrow/core": "file:vendor/gesgrow-core-0.1.0.tgz"
+  }
+}

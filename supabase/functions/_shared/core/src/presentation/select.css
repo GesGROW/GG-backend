@@ -1,0 +1,165 @@
+/* Shared native selects. The picker stays in the browser's top layer. */
+:root select:not([multiple]):not([size]) {
+  display: inline-flex;
+  position: relative;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 44px;
+  padding-inline: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: #e3e4d6;
+  color: #022f2a;
+  color-scheme: light;
+  font-family: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+:root select:not([multiple]):not([size]):disabled {
+  background: #e3e4d6;
+  color: #022f2a;
+  opacity: 0.55;
+  cursor: default;
+}
+
+@supports (appearance: base-select) {
+  :root select:not([multiple]):not([size]),
+  :root select:not([multiple]):not([size])::picker(select) {
+    appearance: base-select !important;
+  }
+
+  :root select:not([multiple]):not([size])::picker-icon {
+    content: '';
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23022F2A' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+    color: #022f2a;
+    rotate: 0deg;
+  }
+
+  :root select > button.scc-select-trigger {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: flex-start;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    overflow: hidden;
+  }
+
+  :root select > button.scc-select-trigger selectedcontent {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  :root select:not([multiple]):not([size]) + :is(.owner-icon, .home-icon, .campaign-report-icon, img, svg, .icon) {
+    display: none;
+  }
+
+  :root select:not([multiple]):not([size])::picker(select) {
+    box-sizing: border-box;
+    inline-size: anchor-size(width);
+    max-inline-size: calc(100vw - 24px);
+    max-block-size: min(320px, 55dvh);
+    margin-block: 8px;
+    padding: 12px;
+    border: 0;
+    border-radius: 24px;
+    background: #e3e4d6;
+    color: #022f2a;
+    box-shadow: none;
+    font: inherit;
+    font-size: max(14px, 1em);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #b2b6a6 #fff;
+  }
+
+  :root select:not([multiple]):not([size]) option {
+    display: block;
+    position: relative;
+    min-height: 44px;
+    margin-block: 4px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #022f2a;
+    font: inherit;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    outline: none;
+    cursor: pointer;
+  }
+
+  :root select:not([multiple]):not([size]) option:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    inset-inline: 12px;
+    bottom: -3px;
+    height: 1px;
+    background: #022f2a;
+  }
+
+  :root select:not([multiple]):not([size]) option::checkmark {
+    display: none;
+  }
+
+  :root select:not([multiple]):not([size]) option:checked {
+    background: #c1f13d;
+    color: #022f2a;
+  }
+
+  :root select:not([multiple]):not([size]) option:is(:hover, :focus-visible):not(:checked):not(:disabled) {
+    background: #d3d8c4;
+  }
+
+  :root select:not([multiple]):not([size]) option:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+@supports not (appearance: base-select) {
+  :root select:not([multiple]):not([size]) {
+    appearance: none;
+    padding-right: 48px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23022F2A' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 20px center;
+    background-size: 18px;
+  }
+
+  :root select:not([multiple]):not([size]) + :is(.owner-icon, .home-icon, .campaign-report-icon, img, svg, .icon) {
+    display: none;
+  }
+
+  :root select:not([multiple]):not([size]) option {
+    background: #e3e4d6;
+    color: #022f2a;
+  }
+
+  :root select:not([multiple]):not([size]) option:checked {
+    background: #c1f13d;
+  }
+}
