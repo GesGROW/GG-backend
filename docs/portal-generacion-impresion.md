@@ -1,5 +1,7 @@
 # Campaña: generación e impresión de tickets
 
+> La impresión vigente de tres columnas de 30 × 20 mm, PDF y TSPL se describe en [impresion-tickets-tsc.md](impresion-tickets-tsc.md). Las secciones A4 siguientes corresponden al formato histórico de generaciones anteriores.
+
 El contenedor de una campaña muestra Tickets, Trabajadores y Reportes a la izquierda. Tickets incluye las subopciones de generación, lotes generados y asignaciones, rediseñadas a partir de los PNG y SVG proporcionados. Los listados comparten la base visual de tablas de Usuarios y accesos; sus contratos y la ampliación de fecha de asignación se describen en `portal-listados-lotes.md`.
 
 El selector conserva «Agregar campaña / cultivo» y añade «(actual)» a las campañas cuyo estado es `ACTIVA`. Elegir una campaña abre `/cosecha/generar?campania=…`; una campaña cerrada permite consulta, pero no generación.
