@@ -20,6 +20,13 @@ reiniciar la base de datos. No ejecutar scripts de limpieza sobre un proyecto ya
 poblado ni reaplicar todas las migraciones sin contrastar el historial remoto.
 Los procedimientos manuales de soporte están separados de las migraciones.
 
+## Vinculación de PDA
+
+El [contrato de vinculación](docs/pda-vinculacion-api.md) documenta los RPC para
+generar QR, vincular y revocar dispositivos, y registrar operaciones autenticadas.
+El acceso obligatorio se activa por empresa después de integrar los clientes;
+la migración mantiene inicialmente la compatibilidad con los PDA existentes.
+
 ## Edge Functions
 
 Ejecutar Supabase CLI desde la raíz de este repositorio. invitar-usuario y sus

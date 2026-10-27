@@ -1,0 +1,378 @@
+import assert from 'node:assert/strict'
+import test, { before, after } from 'node:test'
+import { readFileSync } from 'node:fs'
+import { randomBytes, createHash } from 'node:crypto'
+import { PGlite } from '@electric-sql/pglite'
+import { prepararHarvestSql, A } from './helpers/harvestSql.js'
+import { TENANT_INICIAL_ID as T1 } from '@gesgrow/core/contexts/platform/index.js'
+
+const db = new PGlite()
+const T2 = crypto.randomUUID()
+const cuentas = {}
+const migracion = '20261027152741_pda_vinculacion_dispositivos.sql'
+const read = (name) => readFileSync(new URL('../supabase/migrations/' + name, import.meta.url), 'utf8')
+const call = async (sql, args = []) => (await db.query('select ' + sql + ' r', args)).rows[0].r
+const login = (nombre) => db.query("select set_config('request.jwt.claim.sub',$1,false)", [cuentas[nombre]?.sujeto ?? ''])
+const secreto = () => randomBytes(32).toString('hex')
+const generar = (tenant = T1, horas = 24) => call('pda_generar_vinculacion($1::uuid,$2::integer)', [tenant, horas])
+const listar = (tenant = T1) => call('pda_administrar_dispositivos($1::uuid)', [tenant])
+const vincular = (token, dispositivo, nombre = 'PDA Campo Norte') =>
+  call('pda_vincular_dispositivo($1::text,$2::uuid,$3::text,$4::text)', [token, dispositivo.id, dispositivo.clave, nombre])
+const contexto = (d) => call('pda_obtener_contexto($1::uuid,$2::text)', [d.id, d.clave])
+const revocar = (d, tenant = T1) => call('pda_revocar_dispositivo($1::uuid,$2::uuid)', [tenant, d.id])
+const operar = (d, tipo, datos, id = crypto.randomUUID(), campania = A) =>
+  call('pda_operar($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::jsonb)', [d.id, d.clave, campania, id, tipo, datos])
+const nuevoPda = () => ({ id: crypto.randomUUID(), clave: secreto() })
+let qr, dispositivo, propio
+
+before(async () => {
+  await prepararHarvestSql(db)
+  await db.exec(`create schema auth;
+    create table auth.users(id uuid primary key,email text unique,invited_at timestamptz,encrypted_password text);
+    create function auth.uid() returns uuid language sql stable as $$
+      select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
+    grant usage on schema auth to anon,authenticated;
+    create role service_role bypassrls;`)
+  for (const name of [
+    '202610140600_harvest_cutover.sql',
+    '202610140610_harvest_proyecciones.sql',
+    '202610140700_platform_tenants.sql',
+    '202610140800_identity_access.sql',
+    '202610140900_platform_suscripciones.sql',
+    '202610141000_platform_ciclo_vida.sql',
+    '202610141100_portal_identity_admin.sql',
+    '202610141200_portal_campaign_workforce.sql',
+    '202610141300_portal_harvest_admin.sql',
+    '202610141400_portal_reportes.sql',
+    '202610141500_portal_suscripcion.sql',
+    '202610141600_portal_cutover_administrativo.sql',
+    '202610141700_farm_structure.sql',
+    '202610191000_portal_trabajadores_cosecha.sql',
+    '202610211000_portal_activacion_cuenta.sql',
+    '202610211100_owner_modulos.sql',
+    '202610211200_usuarios_accesos_modulo.sql',
+    '202610221000_harvest_cultivos_supervisores.sql',
+    '20261023232743_portal_activacion_dni.sql',
+    '20261023232746_portal_supervisor_dni_pwa.sql',
+    '20261023233717_portal_validacion_operador_dni.sql'
+  ]) await db.exec(read(name))
+  await db.exec(read(migracion))
+  await db.exec(read('20261027175118_pda_supervisores_gestion.sql'))
+  await db.query("insert into tenants(id,nombre,codigo) values($1,'Empresa B','PDA-B')", [T2])
+  for (const [nombre, tenant, rol] of [
+    ['admin', T1, 'ADMIN_EMPRESA'],
+    ['supervisor', T1, 'SUPERVISOR_COSECHA'],
+    ['otroSupervisor', T1, 'SUPERVISOR_COSECHA'],
+    ['consulta', T1, 'CONSULTA'],
+    ['operador', T1, 'OPERADOR_CAMPO'],
+    ['ajeno', T2, 'SUPERVISOR_COSECHA']
+  ]) {
+    cuentas[nombre] = { sujeto: crypto.randomUUID() }
+    await db.query('insert into auth.users(id,email,encrypted_password) values($1,$2,\'hash\')', [cuentas[nombre].sujeto, nombre + '@test.local'])
+    await login(nombre)
+    cuentas[nombre].id = (await call('iam_obtener_identidad()')).usuario.id
+    await db.query(`with m as (
+      insert into identity_membresias(tenant_id,usuario_id) values($1,$2) returning id
+    ) insert into identity_membresia_roles(tenant_id,membresia_id,rol_id)
+      select $1,m.id,r.id from m cross join identity_roles r where r.tenant_id=$1 and r.codigo=$3`,
+    [tenant, cuentas[nombre].id, rol])
+  }
+  await login('supervisor')
+  const fechas = (await db.query(`select
+    (clock_timestamp() at time zone 'America/Lima')::date::text inicio,
+    ((clock_timestamp() at time zone 'America/Lima')::date + 30)::text fin`)).rows[0]
+  propio = await call('harvest_cultivos_crear($1::uuid,$2::uuid,$3::jsonb)', [T1, crypto.randomUUID(), {
+    nombre: 'Cultivo PDA', color: '#3B64EC', variedades: ['Ventura'],
+    lotes: [{ nombre: 'Campo Norte', variedades: ['Ventura'] }],
+    campania: { nombre: 'Cosecha PDA', fechaInicio: fechas.inicio, fechaFin: fechas.fin }
+  }])
+  await db.exec('set role authenticated')
+})
+after(() => db.close())
+
+test('ACL: las tablas y helpers privados no admiten acceso directo; anon no puede vincular ni operar', async () => {
+  await login('admin')
+  await assert.rejects(db.query('select * from pda_privado.dispositivos'), /permission denied/)
+  await assert.rejects(db.query('select * from pda_privado.vinculaciones'), /permission denied/)
+  await assert.rejects(call('pda_privado.exigir_dispositivo($1::uuid,$2::text)', [crypto.randomUUID(), secreto()]), /permission denied/)
+  await db.exec('set role anon')
+  await login(null)
+  await assert.rejects(generar(), /permission denied/)
+  await assert.rejects(vincular(secreto(), nuevoPda()), /permission denied/)
+  await assert.rejects(contexto(nuevoPda()), /permission denied/)
+  await assert.rejects(operar(nuevoPda(), 'CERRAR_SESION', {}), /permission denied/)
+  await db.exec('set role authenticated')
+  // Incluso con el rol authenticated no basta un JWT sin sujeto verificado.
+  await assert.rejects(generar(), /Sesión autenticada/)
+})
+
+test('administrador y supervisor gestionan QR; consulta y operador no, con empresa y módulo validados', async () => {
+  for (const nombre of ['consulta', 'operador', 'ajeno']) {
+    await login(nombre)
+    await assert.rejects(generar(), /denegado|no autorizada/)
+  }
+  await login('admin')
+  await assert.rejects(generar(T2), /no autorizada/)
+  for (const horas of [null, 0, 169]) await assert.rejects(generar(T1, horas), /vigencia/)
+  qr = await generar()
+  assert.match(qr.token, /^[0-9a-f]{64}$/)
+  assert.equal(qr.tenantId, T1)
+  const listado = await listar()
+  assert.equal(listado.vinculacion.id, qr.id)
+  assert.equal(listado.vinculacion.estado, 'ACTIVA')
+  assert.deepEqual(listado.dispositivos, [])
+  assert.equal(JSON.stringify(listado).includes(qr.token), false)
+  await db.exec('reset role')
+  const fila = (await db.query('select * from pda_privado.vinculaciones where id=$1', [qr.id])).rows[0]
+  assert.equal(Buffer.from(fila.token_hash).toString('hex'), createHash('sha256').update(qr.token).digest('hex'))
+  assert.equal(JSON.stringify(fila).includes(qr.token), false)
+  await db.exec('set role authenticated')
+  await login('supervisor')
+  const anterior = qr
+  qr = await generar()
+  assert.notEqual(qr.token, anterior.token)
+  assert.equal((await listar()).vinculacion.id, qr.id)
+  await assert.rejects(generar(T2), /no autorizada/)
+  await db.exec('reset role')
+  assert.equal((await db.query('select creada_por from pda_privado.vinculaciones where id=$1', [qr.id])).rows[0].creada_por, cuentas.supervisor.id)
+  await db.exec('set role authenticated')
+})
+
+test('vincular exige permiso operativo y membresía en la empresa del QR, además de la credencial', async () => {
+  await login('consulta')
+  await assert.rejects(vincular(qr.token, nuevoPda()), /denegado/)
+  await login('ajeno')
+  await assert.rejects(vincular(qr.token, nuevoPda()), /no autorizada/)
+  await login('supervisor')
+  await assert.rejects(vincular('123', nuevoPda()), /QR no disponible/)
+  await assert.rejects(vincular(qr.token, { id: crypto.randomUUID(), clave: '1234' }), /32 bytes/)
+  await assert.rejects(vincular(qr.token, nuevoPda(), ' '), /nombre/)
+  dispositivo = nuevoPda()
+  const primero = await vincular(qr.token, dispositivo)
+  const reintento = await vincular(qr.token, dispositivo)
+  assert.deepEqual(reintento, primero)
+  assert.equal(primero.contexto.usuarioId, cuentas.supervisor.id)
+  assert.equal(primero.dispositivo.tenantId, T1)
+  assert.equal(JSON.stringify(primero).includes(dispositivo.clave), false)
+  await assert.rejects(vincular(qr.token, { ...dispositivo, clave: secreto() }), /ya está vinculada/)
+  await db.exec('reset role')
+  const fila = (await db.query('select * from pda_privado.dispositivos where id=$1', [dispositivo.id])).rows[0]
+  assert.equal(Buffer.from(fila.credencial_hash).toString('hex'), createHash('sha256').update(dispositivo.clave).digest('hex'))
+  await db.exec('set role authenticated')
+})
+
+test('regenerar invalida el QR anterior, conserva el PDA vinculado y rechaza QR vencidos', async () => {
+  await login('admin')
+  const anterior = qr
+  qr = await generar()
+  await login('supervisor')
+  await assert.rejects(vincular(anterior.token, nuevoPda()), /QR no disponible/)
+  const c = await contexto(dispositivo)
+  assert.equal(c.contexto.tenantId, T1)
+  assert.ok(c.campanias.some((fila) => fila.id === propio.campaniaId))
+  assert.ok(Date.parse(c.autorizadoHasta) > Date.parse(c.validadoEn))
+  assert.ok(Date.parse(c.autorizadoHasta) - Date.parse(c.validadoEn) <= 86400000)
+  assert.ok(c.dispositivo.ultimoAccesoEn)
+  await db.exec('reset role')
+  await db.query("update pda_privado.vinculaciones set creada_en=now()-interval '2 days', vence_en=now()-interval '1 day' where id=$1", [qr.id])
+  await db.exec('set role authenticated')
+  await assert.rejects(vincular(qr.token, nuevoPda()), /QR no disponible/)
+  assert.equal((await contexto(dispositivo)).dispositivo.id, dispositivo.id)
+  await login('admin')
+  assert.equal((await listar()).vinculacion.estado, 'VENCIDA')
+  qr = await generar()
+})
+
+test('validación reconsulta usuario, membresía, rol, módulo y empresa; una clave o empresa ajena no sirve', async () => {
+  await login('supervisor')
+  await assert.rejects(contexto({ ...dispositivo, clave: secreto() }), /no autorizado/)
+  await login('ajeno')
+  await assert.rejects(contexto(dispositivo), /no autorizada/)
+  await login('supervisor')
+  for (const [revocarSql, restaurarSql, args] of [
+    ['update identity_usuarios set activo=false where id=$1', 'update identity_usuarios set activo=true where id=$1', [cuentas.supervisor.id]],
+    ['update identity_membresias set activo=false where usuario_id=$1', 'update identity_membresias set activo=true where usuario_id=$1', [cuentas.supervisor.id]],
+    ["update identity_roles set activo=false where tenant_id=$1 and codigo='SUPERVISOR_COSECHA'", "update identity_roles set activo=true where tenant_id=$1 and codigo='SUPERVISOR_COSECHA'", [T1]],
+    ["update tenants set estado='SUSPENDIDA' where id=$1", "update tenants set estado='ACTIVA' where id=$1", [T1]],
+    ["update platform_modulos set disponible=false where codigo='HARVEST'", "update platform_modulos set disponible=true where codigo='HARVEST'", []]
+  ]) {
+    await db.exec('reset role')
+    await db.query(revocarSql, args)
+    await db.exec('set role authenticated')
+    await assert.rejects(contexto(dispositivo))
+    await db.exec('reset role')
+    await db.query(restaurarSql, args)
+    await db.exec('set role authenticated')
+    assert.equal((await contexto(dispositivo)).contexto.usuarioId, cuentas.supervisor.id)
+  }
+})
+
+test('operaciones reales conservan UUID, recibos y autor al reintentar; rechazan otro actor, datos o empresa', async () => {
+  await login('supervisor')
+  const campania = propio.campaniaId
+  const recursos = await call('iam_recursos_campania($1::uuid)', [campania])
+  const lote = recursos.lotes[0]
+  const variedad = recursos.variedades[0].variedad_id
+  // El jabero debe pertenecer a la nueva campaña y cumplir las reglas de Workforce.
+  await db.exec('reset role')
+  const worker = (await db.query(`insert into trabajadores(tenant_id,dni,nombres,apellidos,activo)
+    values($1,'88887777','Jabero','PDA',true) returning id`, [T1])).rows[0].id
+  const jabero = (await db.query(`insert into trabajador_campania_rol(trabajador_id,campania_id,rol,activo)
+    values($1,$2,'JABERO',true) returning id`, [worker, campania])).rows[0].id
+  await db.exec('set role authenticated')
+  const inicioId = crypto.randomUUID()
+  const inicioDatos = { loteId: lote.id, variedadId: variedad, jaberoRolId: jabero }
+  const externaId = crypto.randomUUID()
+  await call('iam_iniciar_sesion_lectura($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid)', [campania, lote.id, variedad, jabero, externaId])
+  await call('iam_cerrar_sesion_lectura($1::uuid,$2::uuid)', [campania, externaId])
+  await assert.rejects(operar(dispositivo, 'INICIAR_SESION', inicioDatos, externaId, campania), /existente fuera del contrato/)
+  const inicio = await operar(dispositivo, 'INICIAR_SESION', inicioDatos, inicioId, campania)
+  assert.equal(inicio.id, inicioId)
+  assert.deepEqual(await operar(dispositivo, 'INICIAR_SESION', inicioDatos, inicioId, campania), inicio)
+  const generacion = await call('harvest_admin_generar($1::uuid,$2::uuid,$3::uuid,2,2)', [T1, campania, crypto.randomUUID()])
+  await db.exec('reset role')
+  const codigo = (await db.query('select codigo from harvest_tickets where lote_id=$1 order by codigo limit 1', [generacion.lotes[0].id])).rows[0].codigo
+  await db.query('insert into harvest_cutovers(campania_id,version,activado_en,activado_por) values($1,1,clock_timestamp(),auth.uid())', [campania])
+  await db.exec('set role authenticated')
+  const asignacionId = crypto.randomUUID()
+  const asignacionDatos = { trabajadorId: worker, codigo }
+  const asignacion = await operar(dispositivo, 'ASIGNAR_LOTE', asignacionDatos, asignacionId, campania)
+  assert.equal(asignacion.asignacion.trabajador_id, worker)
+  assert.deepEqual(await operar(dispositivo, 'ASIGNAR_LOTE', asignacionDatos, asignacionId, campania), asignacion)
+  const registroId = crypto.randomUUID()
+  const registroDatos = { sesionId: inicioId, codigo, fecha: await call('clock_timestamp()::text') }
+  const registro = await operar(dispositivo, 'REGISTRAR_COSECHA', registroDatos, registroId, campania)
+  assert.equal(registro.registro.id, registroId)
+  assert.deepEqual(await operar(dispositivo, 'REGISTRAR_COSECHA', registroDatos, registroId, campania), registro)
+  await assert.rejects(operar(dispositivo, 'REGISTRAR_COSECHA', registroDatos, crypto.randomUUID(), campania), /ya_utilizado/)
+  // Un rechazo revierte también el recibo y el contexto temporal del dispositivo.
+  assert.equal(await call("coalesce(current_setting('gesgrow.pda_solicitud',true),'')"), '')
+  await assert.rejects(operar(dispositivo, 'INICIAR_SESION', { ...inicioDatos, extra: 'cambiado' }, inicioId, campania), /reutilizado/)
+  await login('otroSupervisor')
+  await db.exec('reset role')
+  await db.query('insert into harvest_cultivo_supervisores(tenant_id,cultivo_id,usuario_id) values($1,$2,$3)', [T1, propio.cultivoId, cuentas.otroSupervisor.id])
+  await db.exec('set role authenticated')
+  assert.equal((await contexto(dispositivo)).contexto.usuarioId, cuentas.otroSupervisor.id)
+  await assert.rejects(operar(dispositivo, 'INICIAR_SESION', inicioDatos, inicioId, campania), /otro actor/)
+  await login('supervisor')
+  const otroPda = nuevoPda()
+  await vincular(qr.token, otroPda)
+  await assert.rejects(operar(otroPda, 'INICIAR_SESION', inicioDatos, inicioId, campania), /dispositivo/)
+  await db.exec('reset role')
+  const otraCampania = crypto.randomUUID()
+  await db.query("insert into campanias(id,tenant_id,codigo,nombre,estado) values($1,$2,'PDA-X','Otra empresa','ACTIVA')", [otraCampania, T2])
+  await db.exec('set role authenticated')
+  await assert.rejects(operar(dispositivo, 'CERRAR_SESION', { sesionId: inicioId }, crypto.randomUUID(), otraCampania), /otra empresa/)
+  const cierreId = crypto.randomUUID()
+  const cierre = await operar(dispositivo, 'CERRAR_SESION', { sesionId: inicioId }, cierreId, campania)
+  assert.equal(cierre.estado, 'CERRADA')
+  assert.deepEqual(await operar(dispositivo, 'CERRAR_SESION', { sesionId: inicioId }, cierreId, campania), cierre)
+  await db.exec('reset role')
+  const recibo = (await db.query('select * from pda_privado.operaciones where id=$1', [inicioId])).rows[0]
+  assert.equal(recibo.usuario_id, cuentas.supervisor.id)
+  assert.equal(recibo.dispositivo_id, dispositivo.id)
+  assert.equal((await db.query('select count(*)::int n from harvest_registros_cosecha where codigo_ticket=$1', [codigo])).rows[0].n, 1)
+  assert.equal((await db.query('select count(*)::int n from pda_privado.operaciones where dispositivo_id=$1', [dispositivo.id])).rows[0].n, 4)
+  await db.exec('set role authenticated')
+  // La revocación se comprueba antes de devolver un recibo ya confirmado.
+  await login('admin')
+  await revocar(dispositivo)
+  await login('supervisor')
+  await assert.rejects(operar(dispositivo, 'INICIAR_SESION', inicioDatos, inicioId, campania), /no autorizado/)
+})
+
+test('activación por empresa cierra rutas legacy e IAM sin dispositivo y restaura el contexto tras fallos', async () => {
+  const configurar = (obligatorio) => call('pda_configurar_acceso($1::uuid,$2::boolean)', [T1, obligatorio])
+  await login('supervisor')
+  await assert.rejects(configurar(true), /denegado/)
+  const d = nuevoPda()
+  await vincular(qr.token, d)
+  await login('admin')
+  assert.equal((await listar()).accesoVinculadoObligatorio, false)
+  await assert.rejects(configurar(null), /Estado/)
+  assert.equal((await configurar(true)).accesoVinculadoObligatorio, true)
+  assert.equal((await listar()).accesoVinculadoObligatorio, true)
+  await login('supervisor')
+  const cierre = () => call('iam_cerrar_sesion_lectura($1::uuid,$2::uuid)', [propio.campaniaId, crypto.randomUUID()])
+  await assert.rejects(cierre(), /PDA vinculado requerido/)
+  await db.query("select set_config('request.headers',$1,false)", [JSON.stringify({
+    'x-gesgrow-device-id': d.id, 'x-gesgrow-device-key': secreto()
+  })])
+  await assert.rejects(cierre(), /PDA vinculado requerido/)
+  await db.query("select set_config('request.headers',$1,false)", [JSON.stringify({
+    'x-gesgrow-device-id': d.id, 'x-gesgrow-device-key': d.clave
+  })])
+  // Una cabecera no abre una ruta sin recibo de dispositivo.
+  await assert.rejects(cierre(), /PDA vinculado requerido/)
+  await db.query("select set_config('request.headers','',false)")
+  await assert.rejects(operar(d, 'CERRAR_SESION', { sesionId: crypto.randomUUID() }, crypto.randomUUID(), propio.campaniaId), /Sesión de otra cuenta/)
+  assert.equal(await call("coalesce(current_setting('gesgrow.pda_solicitud',true),'')"), '')
+  await db.exec('reset role')
+  const jabero = (await db.query("select id from trabajador_campania_rol where campania_id=$1 and rol='JABERO'", [propio.campaniaId])).rows[0].id
+  await db.exec('set role authenticated')
+  const recursos = await call('iam_recursos_campania($1::uuid)', [propio.campaniaId])
+  const inicioId = crypto.randomUUID()
+  const datos = { loteId: recursos.lotes[0].id, variedadId: recursos.variedades[0].variedad_id, jaberoRolId: jabero }
+  const inicio = await operar(d, 'INICIAR_SESION', datos, inicioId, propio.campaniaId)
+  assert.equal(inicio.id, inicioId)
+  assert.deepEqual(await operar(d, 'INICIAR_SESION', datos, inicioId, propio.campaniaId), inicio)
+  assert.equal(await call("coalesce(current_setting('gesgrow.pda_solicitud',true),'')"), '')
+  await operar(d, 'CERRAR_SESION', { sesionId: inicioId }, crypto.randomUUID(), propio.campaniaId)
+  await db.exec('set role anon')
+  await login(null)
+  await assert.rejects(call('obtener_cache_operativa_campania($1::uuid,$2::varchar)', [A, '47480378']), /requiere sesión autenticada/)
+  await assert.rejects(call('registrar_jabero_campania($1::uuid,$2::varchar,$3::varchar,$4::uuid)', [A, '47480378', '77776666', crypto.randomUUID()]), /requiere sesión autenticada/)
+  await db.exec('set role authenticated')
+  await login('admin')
+  await revocar(d)
+  await login('supervisor')
+  await db.query("select set_config('request.headers',$1,false)", [JSON.stringify({
+    'x-gesgrow-device-id': d.id, 'x-gesgrow-device-key': d.clave
+  })])
+  await assert.rejects(cierre(), /PDA vinculado requerido/)
+  await db.query("select set_config('request.headers','',false)")
+  await login('admin')
+  await configurar(false)
+  await db.exec('set role anon')
+  await login(null)
+  assert.equal((await call('obtener_cache_operativa_campania($1::uuid,$2::varchar)', [A, '47480378'])).campania.id, A)
+  await db.exec('set role authenticated')
+})
+
+test('revocación es independiente del QR, no permite reactivar la instalación y no admite otra empresa', async () => {
+  await login('supervisor')
+  const d = nuevoPda()
+  await vincular(qr.token, d)
+  await login('consulta')
+  await assert.rejects(revocar(d), /denegado/)
+  await login('supervisor')
+  await assert.rejects(revocar(d, T2), /no autorizada/)
+  const primera = await revocar(d)
+  assert.equal(primera.estado, 'REVOCADO')
+  assert.deepEqual(await revocar(d), primera)
+  assert.equal((await listar()).vinculacion.id, qr.id)
+  await db.exec('reset role')
+  assert.equal((await db.query('select revocado_por from pda_privado.dispositivos where id=$1', [d.id])).rows[0].revocado_por, cuentas.supervisor.id)
+  await db.exec('set role authenticated')
+  await login('supervisor')
+  await assert.rejects(contexto(d), /no autorizado/)
+  await assert.rejects(vincular(qr.token, d), /revocada/)
+  await vincular(qr.token, nuevoPda())
+})
+
+test('los endpoints públicos son invoker y los secretos permanecen fuera del esquema expuesto', async () => {
+  await db.exec('reset role')
+  await db.exec(read('20261027175118_pda_supervisores_gestion.sql'))
+  assert.equal(await call("has_function_privilege('authenticated','pda_privado.exigir_gestion(uuid)','execute')"), false)
+  const funciones = (await db.query(`select p.proname,p.prosecdef from pg_proc p
+    join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'pda_%'`)).rows
+  assert.equal(funciones.length, 7)
+  assert.ok(funciones.every((f) => f.prosecdef === false))
+  const tablas = (await db.query(`select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname='pda_privado' and c.relkind='r'`)).rows
+  assert.equal(tablas.length, 4)
+  assert.ok(tablas.every((t) => t.relrowsecurity))
+  const anon = (await db.query(`select has_schema_privilege('anon','pda_privado','usage') permitido`)).rows[0]
+  assert.equal(anon.permitido, false)
+  await db.exec('set role authenticated')
+})
