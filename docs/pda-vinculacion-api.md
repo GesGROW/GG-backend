@@ -2,8 +2,9 @@
 
 Migración: `supabase/migrations/20261027152741_pda_vinculacion_dispositivos.sql`.
 Primera entrega local, 2026-10-27. No modifica por defecto el acceso de los PDA
-actuales. El portal consume los RPC de gestión; la integración operativa de
-la PWA sigue pendiente.
+actuales. El portal consume los RPC de gestión. La PWA implementa la primera
+pantalla y el ingreso de supervisor; la sustitución de todos los RPC operativos
+por `pda_operar` sigue pendiente.
 
 ## Autenticación y almacenamiento
 
@@ -59,6 +60,13 @@ equipo no invalida el QR. Una instalación revocada no se reactiva al escanearlo
 No hay una función de cambio de empresa ni de borrado de historial en esta fase.
 
 ## RPC de la aplicación
+
+La ampliación `20261027181414_pda_ingreso_supervisor.sql` añade
+`pda_preparar_ingreso(p_dispositivo_id, p_credencial)`. Devuelve el contexto de
+`pda_obtener_contexto` y `operador`, derivado de la cuenta autenticada y su
+trabajador de la empresa vinculada. Solo incluye campañas activas autorizadas
+de esa empresa; si no tiene asignaciones devuelve `operador: null`. No acepta
+un DNI ni un actor desde el cliente. La PWA lo usa al abrir y validar la jornada.
 
 `pda_vincular_dispositivo(p_token, p_dispositivo_id, p_credencial, p_nombre)`
 devuelve `dispositivo` y `contexto`. El nombre admite de 1 a 80 caracteres.
@@ -141,8 +149,8 @@ roles `anon` y `authenticated`, hashes, vencimiento, revocación, aislamiento,
 permisos actuales, reintentos, las cuatro operaciones reales y las guardas de
 transición. El proveedor Auth se simula con `auth.uid()` en la fixture.
 
-Resultado de esta entrega: 629 pruebas aprobadas, 0 fallidas, incluidas las nueve
-pruebas nuevas de vinculación. `npm run verify:core` confirma que los 109 archivos
+Resultado de esta entrega: 630 pruebas aprobadas, 0 fallidas, incluidas las diez
+pruebas de vinculación e ingreso. `npm run verify:core` confirma que los 109 archivos
 del paquete instalado coinciden con la fuente canónica de las Edge Functions.
 
 El CLI se usó para crear la migración. `db advisors --local` y `migration list

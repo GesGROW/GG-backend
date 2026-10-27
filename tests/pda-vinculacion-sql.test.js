@@ -58,6 +58,7 @@ before(async () => {
   ]) await db.exec(read(name))
   await db.exec(read(migracion))
   await db.exec(read('20261027175118_pda_supervisores_gestion.sql'))
+  await db.exec(read('20261027181414_pda_ingreso_supervisor.sql'))
   await db.query("insert into tenants(id,nombre,codigo) values($1,'Empresa B','PDA-B')", [T2])
   for (const [nombre, tenant, rol] of [
     ['admin', T1, 'ADMIN_EMPRESA'],
@@ -366,7 +367,7 @@ test('los endpoints públicos son invoker y los secretos permanecen fuera del es
   assert.equal(await call("has_function_privilege('authenticated','pda_privado.exigir_gestion(uuid)','execute')"), false)
   const funciones = (await db.query(`select p.proname,p.prosecdef from pg_proc p
     join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname like 'pda_%'`)).rows
-  assert.equal(funciones.length, 7)
+  assert.equal(funciones.length, 8)
   assert.ok(funciones.every((f) => f.prosecdef === false))
   const tablas = (await db.query(`select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace
     where n.nspname='pda_privado' and c.relkind='r'`)).rows
@@ -374,5 +375,32 @@ test('los endpoints públicos son invoker y los secretos permanecen fuera del es
   assert.ok(tablas.every((t) => t.relrowsecurity))
   const anon = (await db.query(`select has_schema_privilege('anon','pda_privado','usage') permitido`)).rows[0]
   assert.equal(anon.permitido, false)
+  await db.exec('set role authenticated')
+})
+
+test('el ingreso deriva el DNI de la cuenta autenticada y revalida equipo, empresa y campañas', async () => {
+  await login('supervisor')
+  await db.exec('reset role')
+  await db.query('update identity_usuarios set dni=$1,nombre=$2 where id=$3', ['78561234','Supervisor PDA',cuentas.supervisor.id])
+  await call('iam_vincular_dni_supervisor($1::uuid)', [T1])
+  await db.exec('set role authenticated')
+  const d = nuevoPda()
+  const nuevoQr = await generar()
+  await vincular(nuevoQr.token, d)
+  const ingresar = () => call('pda_preparar_ingreso($1::uuid,$2::text)', [d.id,d.clave])
+  const ingreso = await ingresar()
+  assert.equal(ingreso.operador.dni, '78561234')
+  assert.equal(ingreso.contexto.usuarioId, cuentas.supervisor.id)
+  assert.ok(ingreso.operador.campanias.length > 0)
+  assert.ok(ingreso.operador.campanias.every(c => c.tenant_id === T1))
+  await login('otroSupervisor')
+  assert.equal((await ingresar()).operador, null)
+  await login('ajeno')
+  await assert.rejects(ingresar(), /no autorizada/)
+  await login('supervisor')
+  await revocar(d)
+  await assert.rejects(ingresar(), /no autorizado/)
+  await db.exec('set role anon')
+  await assert.rejects(ingresar(), /permission denied/)
   await db.exec('set role authenticated')
 })
