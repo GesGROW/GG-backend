@@ -191,3 +191,42 @@ test('consulta autoriza harvest.view; escritura requiere gestión, empresa y par
     await db.exec('reset role')
   }
 })
+
+test('E014/E019: metricas sin lecturas y DNI inmutable en la API', async () => {
+  await db.exec(read('20261028220241_harvest_resumen_configuracion_dni_fijo.sql'))
+  const resumen = async () =>
+    (await call('harvest_proyectar_resumen($1::uuid,$2)', [A, 'America/Lima'])).resumen
+  const antes = await resumen()
+  assert.equal(antes.total_jabas, 0)
+  assert.ok(antes.total_lotes_configurados > 0)
+  assert.ok(antes.total_variedades_configuradas > 0)
+  for (const dni of ['98123450', '98123451']) {
+    const w = (
+      await db.query(
+        "insert into trabajadores(tenant_id,dni,nombres,apellidos,activo) values($1,$2,'Nuevo','Cosechador',true) returning id",
+        [T, dni]
+      )
+    ).rows[0].id
+    await db.query(
+      "insert into trabajador_campania_rol(tenant_id,campania_id,trabajador_id,rol,activo) values($1,$2,$3,'COSECHADOR',true)",
+      [T, A, w]
+    )
+  }
+  const fichaAntes = await ficha()
+  await assert.rejects(
+    editar(cosechador, 'COSECHADOR', { dni: '99112233' }),
+    /no se puede modificar/
+  )
+  assert.deepEqual(await ficha(), fichaAntes)
+  assert.equal(
+    (await editar(cosechador, 'COSECHADOR', { dni: fichaAntes.dni })).dni,
+    fichaAntes.dni
+  )
+  const despues = await resumen()
+  assert.equal(despues.total_jabas, 0)
+  assert.equal(
+    despues.total_cosechadores_registrados,
+    antes.total_cosechadores_registrados + 2
+  )
+  assert.equal(despues.dias_con_produccion, 0)
+})
