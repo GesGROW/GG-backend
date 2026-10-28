@@ -44,9 +44,10 @@ para clientes. No añadir ese esquema a los expuestos en la Data API.
 | `pda_generar_vinculacion` | `p_tenant_id`, `p_vigencia_horas` (1–168, predeterminado 24) | `id`, `tenantId`, `token`, `venceEn` |
 | `pda_administrar_dispositivos` | `p_tenant_id` | `tenantId`, `accesoVinculadoObligatorio`, `vinculacion`, `dispositivos` |
 | `pda_revocar_dispositivo` | `p_tenant_id`, `p_dispositivo_id` | Dispositivo con estado `REVOCADO` |
+| `pda_renovar_dispositivo` | `p_tenant_id`, `p_dispositivo_id` | Mismo dispositivo con estado `ACTIVO` |
 | `pda_configurar_acceso` | `p_tenant_id`, `p_obligatorio` | Empresa y estado del acceso obligatorio |
 
-Generar, listar y revocar admiten `company.manage` o `harvest.manage` en la empresa.
+Generar, listar, revocar y renovar admiten `company.manage` o `harvest.manage` en la empresa.
 `pda_configurar_acceso` sigue requiriendo `company.manage`. Generar el QR o activar el acceso obligatorio
 también exige HARVEST habilitado. Consultar o revocar equipos no exige que el
 módulo continúe contratado.
@@ -59,6 +60,17 @@ token, la credencial ni sus hashes. Si se pierde el token, generar otro.
 
 Revocar es idempotente. Regenerar el QR no revoca dispositivos y revocar un
 equipo no invalida el QR. Una instalación revocada no se reactiva al escanearlo.
+La ampliación `20261028163604_pda_renovar_acceso.sql` permite renovar explícitamente
+su acceso desde el portal, con HARVEST habilitado. Conserva UUID, nombre, fecha
+de vinculación, credencial y registros de campo; no exige otro QR. El PDA puede
+volver a ingresar con su DNI al conectarse. Renovar un equipo activo devuelve
+su estado actual sin duplicar el evento.
+
+La tabla privada `pda_privado.renovaciones` conserva actor y fecha de la renovación,
+además de la revocación anterior y su autor. Tiene RLS y carece de acceso directo
+para clientes. La renovación y su registro son atómicos y se serializan con la
+revocación mediante bloqueo del dispositivo. La fachada pública es invoker y
+solo `authenticated` puede ejecutarla, con permisos revalidados en el servidor.
 No hay una función de cambio de empresa ni de borrado de historial en esta fase.
 
 ## RPC de la aplicación
@@ -189,7 +201,7 @@ roles `anon` y `authenticated`, hashes, vencimiento, revocación, aislamiento,
 permisos actuales, reintentos, las cuatro operaciones reales y las guardas de
 transición. El proveedor Auth se simula con `auth.uid()` en la fixture.
 
-Resultado de esta entrega: 636 pruebas aprobadas, 0 fallidas, incluidas las dieciséis
+Resultado de esta entrega: 637 pruebas aprobadas, 0 fallidas, incluidas las diecisiete
 pruebas de vinculación e ingreso. `npm run verify:core` confirma que los 109 archivos
 del paquete instalado coinciden con la fuente canónica de las Edge Functions.
 
