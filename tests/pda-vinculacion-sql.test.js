@@ -606,3 +606,69 @@ test('renovar exige gestión en la empresa, conserva identidad y credencial y au
   await db.exec('set role anon')
   await assert.rejects(renovar(d), /permission denied/)
 })
+
+test('campaña nueva asigna el lote completo, rechaza ticket hermano y aparece en la consulta administrativa', async () => {
+  await db.exec('reset role'); await login('supervisor')
+  await db.exec(read('20261028185125_harvest_asignacion_lote_obligatoria.sql'))
+  await db.exec(read('202610221100_harvest_listados_lotes.sql'))
+  await db.exec(read('20261028190321_harvest_fecha_asignacion_lote.sql'))
+  const inicio=(await db.query("select (clock_timestamp() at time zone 'America/Lima')::date::text d")).rows[0].d
+  const r=await call('harvest_cultivos_crear($1::uuid,$2::uuid,$3::jsonb)',[T1,crypto.randomUUID(),{
+    nombre:'Cultivo seguro',color:'#3B64EC',variedades:['Ventura'],
+    lotes:[{nombre:'Norte',variedades:['Ventura']}],
+    campania:{nombre:'Nueva por lote',fechaInicio:inicio,fechaFin:inicio}
+  }])
+  assert.equal(await call('(select count(*) from harvest_cutovers where campania_id=$1)',[r.campaniaId]),1)
+  const lote=crypto.randomUUID()
+  await db.query('insert into harvest_lotes_tickets(id,campania_id,tenant_id) values($1,$2,$3)',[lote,r.campaniaId,T1])
+  await db.query("insert into harvest_tickets(codigo,lote_id,campania_id,tenant_id) values('E012-01',$1,$2,$3),('E012-02',$1,$2,$3)",[lote,r.campaniaId,T1])
+  const asignar=(codigo,dni,op)=>call('harvest_asignar_lote_tickets($1::uuid,$2::varchar,$3::varchar,$4::text,$5::uuid)',[r.campaniaId,'78561234',dni,codigo,op])
+  await db.exec('set role anon');await login(null)
+  const op=crypto.randomUUID()
+  await asignar('E012-01','33445566',op)
+  await assert.rejects(asignar('E012-02','44556677',crypto.randomUUID()),/harvest_lote_ya_asignado/)
+  await asignar('E012-02','33445566',op) // reintento idempotente del mismo lote
+  const snapshot=await call('harvest_obtener_snapshot($1::uuid,$2::varchar)',[r.campaniaId,'78561234'])
+  assert.equal(snapshot.asignacionesDeLote.length,1)
+  assert.ok(snapshot.asignacionesDeLote[0].fechaAsignacion)
+  assert.equal(snapshot.cutover.version,1)
+  await assert.rejects(call('asignar_ticket_campania($1::uuid,$2::varchar,$3::varchar,$4::varchar,$5::uuid)',[r.campaniaId,'78561234','44556677','E012-02',crypto.randomUUID()]),/legacy_solo_lectura/)
+  await db.exec('set role authenticated'); await login('supervisor')
+  const dto=await call('harvest_admin_obtener($1::uuid,$2::text,$3::text)',[T1,'lotes',lote])
+  assert.equal(dto.estado,'ASIGNADO')
+  assert.equal(dto.cantidadTickets,2)
+  assert.equal(dto.asignacion.operacionId,op)
+  const tabla=await call('harvest_admin_listar($1::uuid,$2::text,$3::uuid)',[T1,'asignaciones',r.campaniaId])
+  assert.equal(tabla.total,1)
+  assert.equal(tabla.filas[0].id,lote)
+  assert.ok(tabla.filas[0].asignadoEn)
+  await db.exec('reset role')
+  assert.equal(await call('(select count(*) from harvest_asignaciones_lote where lote_id=$1)',[lote]),1)
+})
+
+test('conciliar un lote dividido conserva ambas asignaciones y exige una decisión privada explícita', async () => {
+  await db.exec('reset role'); await login('supervisor')
+  const lote=crypto.randomUUID(),op=crypto.randomUUID()
+  await db.query('insert into harvest_lotes_tickets(id,campania_id,tenant_id) values($1,$2,$3)',[lote,A,T1])
+  const workers=[]
+  for(const [codigo,dni] of [['HIST-01','33445566'],['HIST-02','44556677']]) {
+    const w=await call('(select id from trabajadores where dni=$1)',[dni]); workers.push(w)
+    const rol=(await db.query(`insert into trabajador_campania_rol(trabajador_id,campania_id,rol,activo,tenant_id)
+      values($1,$2,'COSECHADOR',true,$3) returning id`,[w,A,T1])).rows[0].id
+    await db.query('insert into harvest_tickets(codigo,lote_id,campania_id,tenant_id) values($1,$2,$3,$4)',[codigo,lote,A,T1])
+    await db.query('insert into asignaciones_ticket(codigo_ticket,campania_id,cosechador_rol_id,tenant_id) values($1,$2,$3,$4)',[codigo,A,rol,T1])
+  }
+  const asignar=()=>db.query('insert into harvest_asignaciones_lote(lote_id,campania_id,trabajador_id,operacion_id,tenant_id) values($1,$2,$3,$4,$5)',[lote,A,workers[0],op,T1])
+  await assert.rejects(asignar(),/pendientes de conciliación/)
+  await db.query(`insert into pda_privado.conciliaciones_lote(lote_id,campania_id,trabajador_id,operacion_id,conciliado_por,motivo,historial)
+    select $1,$2,$3,$4,$5,'Conservar la primera asignación',jsonb_agg(to_jsonb(a)) from asignaciones_ticket a
+    join harvest_tickets t on t.codigo=a.codigo_ticket and t.campania_id=a.campania_id where t.lote_id=$1`,[lote,A,workers[0],op,cuentas.supervisor.sujeto])
+  await asignar()
+  assert.equal(await call('(select trabajador_id from harvest_asignaciones_lote where lote_id=$1)',[lote]),workers[0])
+  assert.equal(await call('(select count(*) from asignaciones_ticket a join harvest_tickets t on t.codigo=a.codigo_ticket where t.lote_id=$1)',[lote]),2)
+  assert.equal(await call('(select jsonb_array_length(historial) from pda_privado.conciliaciones_lote where lote_id=$1)',[lote]),2)
+  await db.exec('set role authenticated')
+  await assert.rejects(db.query('select * from pda_privado.conciliaciones_lote'),/permission denied/)
+  await db.exec('set role anon')
+  await assert.rejects(db.query('select * from pda_privado.conciliaciones_lote'),/permission denied/)
+})
