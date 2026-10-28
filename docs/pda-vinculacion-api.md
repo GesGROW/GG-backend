@@ -8,11 +8,14 @@ por `pda_operar` sigue pendiente.
 
 ## Autenticación y almacenamiento
 
-Todos los RPC nuevos requieren una sesión de cuenta Supabase Auth y el rol
-`authenticated`. El actor se resuelve desde `auth.uid()` e Identity & Access;
-no se acepta un DNI, usuario, rol ni conjunto de permisos como autoridad.
-En esta entrega se reutiliza el acceso de cuenta existente con correo y
-contraseña. El futuro formulario DNI y PIN no está implementado.
+Los RPC de vinculación y configuración requieren una cuenta Supabase Auth y el
+rol `authenticated`. En ellos el actor se resuelve desde `auth.uid()` e Identity
+& Access; no se aceptan usuario, rol ni permisos suministrados por la interfaz.
+El correo y contraseña validan la cuenta una sola vez al vincular o recuperar
+el PIN. `20261028074652_pda_acceso_dni_pin.sql` añade el ingreso diario con DNI y
+PIN de 4 dígitos en un equipo vinculado; sus RPC específicos admiten el rol
+`anon` con credencial de dispositivo y token de sesión propios. Los RPC de
+cuenta anteriores siguen exigiendo Supabase Auth.
 
 El QR permite vincular nuevas instalaciones de una empresa; no es una sesión.
 Un administrador con `company.manage` o supervisor con `harvest.manage` lo genera.
@@ -60,6 +63,25 @@ equipo no invalida el QR. Una instalación revocada no se reactiva al escanearlo
 No hay una función de cambio de empresa ni de borrado de historial en esta fase.
 
 ## RPC de la aplicación
+
+La ampliación `20261028074652_pda_acceso_dni_pin.sql` incorpora:
+
+| RPC | Autorización y resultado |
+| --- | --- |
+| `pda_configurar_pin(dispositivo, credencial, pin)` | Cuenta Auth y PDA activo; obtiene el DNI de su membresía y guarda bcrypt con costo 10. |
+| `pda_iniciar_sesion_pin(dispositivo, credencial, dni, pin)` | Equipo vinculado y PIN válido; devuelve `{ok, sesion, datos}` o `{ok:false, mensaje}`. |
+| `pda_preparar_ingreso_pin(dispositivo, credencial, sesion)` | Sesión PIN vigente, empresa, equipo y permisos efectivos actuales. |
+| `pda_cerrar_sesion_pin(dispositivo, credencial, sesion)` | Revoca el token presentado, conserva el vínculo del dispositivo. |
+
+Los parámetros SQL llevan los prefijos `p_` de la migración. Cinco intentos
+incorrectos bloquean la cuenta 15 minutos y diez bloquean el PDA; los rechazos
+no lanzan excepción para que los contadores se confirmen. Los hashes bcrypt y
+SHA-256 de tokens se guardan en tablas privadas con RLS y sin permisos directos.
+La sesión dura un máximo de 12 horas o hasta la siguiente medianoche de Lima.
+Un nuevo ingreso en el PDA reemplaza su sesión anterior; cambiar PIN revoca las
+sesiones del usuario en esa empresa. Los helpers de contexto no son ejecutables
+por clientes y restauran el sujeto Auth previo al salir, también ante errores.
+El ingreso PIN no habilita otros RPC de cuenta ni devuelve un JWT de Supabase.
 
 La ampliación `20261027181414_pda_ingreso_supervisor.sql` añade
 `pda_preparar_ingreso(p_dispositivo_id, p_credencial)`. Devuelve el contexto de
@@ -149,7 +171,7 @@ roles `anon` y `authenticated`, hashes, vencimiento, revocación, aislamiento,
 permisos actuales, reintentos, las cuatro operaciones reales y las guardas de
 transición. El proveedor Auth se simula con `auth.uid()` en la fixture.
 
-Resultado de esta entrega: 630 pruebas aprobadas, 0 fallidas, incluidas las diez
+Resultado de esta entrega: 634 pruebas aprobadas, 0 fallidas, incluidas las catorce
 pruebas de vinculación e ingreso. `npm run verify:core` confirma que los 109 archivos
 del paquete instalado coinciden con la fuente canónica de las Edge Functions.
 
@@ -157,7 +179,10 @@ El CLI se usó para crear la migración. `db advisors --local` y `migration list
 --local` no pudieron conectar porque no hay un servidor Supabase local en
 `127.0.0.1:54322`. Los controles de catálogo, grants y RLS están cubiertos por las
 pruebas locales; queda pendiente el análisis del CLI en un entorno Supabase y
-la prueba de extremo a extremo con Auth y la PWA. No se aplicó nada en producción.
+la prueba de extremo a extremo con Auth y la PWA. El 2026-10-28 se aplicó la
+ampliación `pda_acceso_dni_pin` en Quijas-SCC y se verificaron catálogo, RLS,
+privilegios y disponibilidad en la API. No se configuraron PIN ni sesiones de
+usuarios reales durante esta comprobación; la nueva PWA sigue en desarrollo local.
 
 La organización de funciones y privilegios sigue la
 [documentación de funciones de Supabase](https://supabase.com/docs/guides/database/functions).

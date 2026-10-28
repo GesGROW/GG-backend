@@ -3,10 +3,11 @@ import test, { before, after } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { randomBytes, createHash } from 'node:crypto'
 import { PGlite } from '@electric-sql/pglite'
+import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto'
 import { prepararHarvestSql, A } from './helpers/harvestSql.js'
 import { TENANT_INICIAL_ID as T1 } from '@gesgrow/core/contexts/platform/index.js'
 
-const db = new PGlite()
+const db = new PGlite({ extensions: { pgcrypto } })
 const T2 = crypto.randomUUID()
 const cuentas = {}
 const migracion = '20261027152741_pda_vinculacion_dispositivos.sql'
@@ -403,4 +404,96 @@ test('el ingreso deriva el DNI de la cuenta autenticada y revalida equipo, empre
   await db.exec('set role anon')
   await assert.rejects(ingresar(), /permission denied/)
   await db.exec('set role authenticated')
+})
+
+let dispositivoPin, sesionPin
+const loginPin = (dni = '78561234', pin = '0427', d = dispositivoPin) => call('pda_iniciar_sesion_pin($1::uuid,$2::text,$3::text,$4::text)', [d.id,d.clave,dni,pin])
+const validarPin = (sesion = sesionPin, d = dispositivoPin) => call('pda_preparar_ingreso_pin($1::uuid,$2::text,$3::text)', [d.id,d.clave,sesion])
+
+test('configurar PIN exige cuenta autenticada y equipo ya vinculado; hash bcrypt real sin PIN en claro', async () => {
+  await db.exec('reset role')
+  await db.exec(read('20261028074652_pda_acceso_dni_pin.sql'))
+  await db.exec('set role authenticated')
+  await login('supervisor')
+  dispositivoPin = nuevoPda()
+  const token = (await generar()).token
+  await vincular(token,dispositivoPin)
+  await assert.rejects(call('pda_configurar_pin($1,$2,$3)',[dispositivoPin.id,dispositivoPin.clave,'123']),/4 dígitos/)
+  await assert.rejects(call('pda_configurar_pin($1,$2,$3)',[dispositivoPin.id,secreto(),'0427']),/no autorizado/)
+  assert.equal((await call('pda_configurar_pin($1,$2,$3)',[dispositivoPin.id,dispositivoPin.clave,'0427'])).dni,'78561234')
+  await db.exec('reset role')
+  const fila=(await db.query('select hash from pda_privado.pines where tenant_id=$1 and usuario_id=$2',[T1,cuentas.supervisor.id])).rows[0]
+  assert.match(fila.hash,/^\$2[aby]\$10\$/)
+  assert.equal(fila.hash.includes('0427'),false)
+  await db.exec('set role anon');await login(null)
+  await assert.rejects(call('pda_configurar_pin($1,$2,$3)',[dispositivoPin.id,dispositivoPin.clave,'0427']),/permission denied/)
+  await assert.rejects(db.query('select * from pda_privado.pines'),/permission denied/)
+  await assert.rejects(call('pda_privado.contexto_pin($1,$2,$3)',[cuentas.supervisor.sujeto,dispositivoPin.id,dispositivoPin.clave]),/permission denied/)
+})
+
+test('DNI y PIN ingresan sin correo, derivan el actor y conservan contexto JWT original al terminar', async () => {
+  const r=await loginPin()
+  assert.equal(r.ok,true);assert.match(r.sesion,/^[0-9a-f]{64}$/);sesionPin=r.sesion
+  assert.equal(r.datos.contexto.usuarioId,cuentas.supervisor.id)
+  assert.equal(r.datos.operador.dni,'78561234')
+  assert.equal(await call('auth.uid()'),null)
+  const actual=await validarPin()
+  assert.equal(actual.contexto.tenantId,T1)
+  assert.ok(Date.parse(actual.autorizadoHasta)<=Date.now()+12*60*60*1000+1000)
+  assert.equal(await call('auth.uid()'),null)
+  await assert.rejects(validarPin(secreto()),/sesión venció/)
+  await assert.rejects(validarPin(sesionPin,{id:crypto.randomUUID(),clave:dispositivoPin.clave}),/PDA no autorizado/)
+  await db.exec('reset role')
+  const guardado=(await db.query('select token_hash from pda_privado.sesiones_pin where dispositivo_id=$1 and revocada_en is null',[dispositivoPin.id])).rows[0]
+  assert.equal(Buffer.from(guardado.token_hash).toString('hex'),createHash('sha256').update(sesionPin).digest('hex'))
+  await db.exec('set role anon')
+})
+
+test('los intentos incorrectos se confirman y bloquean tras cinco fallos, incluso desde otro equipo', async () => {
+  for(let i=0;i<5;i++) assert.equal((await loginPin('78561234','9999')).ok,false)
+  assert.match((await loginPin()).mensaje,/15 minutos/)
+  await db.exec('reset role')
+  const intentos=(await db.query('select fallos,bloqueado_hasta from pda_privado.pines where tenant_id=$1 and usuario_id=$2',[T1,cuentas.supervisor.id])).rows[0]
+  assert.equal(intentos.fallos,5);assert.ok(intentos.bloqueado_hasta)
+  await db.exec('set role authenticated');await login('supervisor')
+  const otro=nuevoPda();await vincular((await generar()).token,otro)
+  await db.exec('set role anon');await login(null)
+  assert.match((await loginPin('78561234','0427',otro)).mensaje,/15 minutos/)
+  for(let i=0;i<10;i++) assert.equal((await loginPin('00000000','9999',otro)).ok,false)
+  assert.match((await loginPin('78561234','0427',otro)).mensaje,/15 minutos/)
+  await db.exec('reset role')
+  await db.query("update pda_privado.pines set bloqueado_hasta=clock_timestamp()-interval '1 minute'")
+  await db.query("update pda_privado.intentos_pin set bloqueado_hasta=clock_timestamp()-interval '1 minute'")
+  await db.exec('set role anon')
+  sesionPin=(await loginPin()).sesion
+  assert.ok(sesionPin)
+})
+
+test('sesión PIN no cambia de actor con un JWT ajeno y revalida permisos; salir y cambiar PIN invalidan sesiones', async () => {
+  await db.exec('set role authenticated');await login('otroSupervisor')
+  assert.equal((await validarPin()).contexto.usuarioId,cuentas.supervisor.id)
+  assert.equal(await call('auth.uid()'),cuentas.otroSupervisor.sujeto)
+  await login('supervisor')
+  await call('pda_configurar_pin($1,$2,$3)',[dispositivoPin.id,dispositivoPin.clave,'0427'])
+  await assert.rejects(validarPin(),/sesión venció/)
+  await db.exec('set role anon');await login(null)
+  sesionPin=(await loginPin()).sesion
+  const sesionAnterior=sesionPin
+  sesionPin=(await loginPin()).sesion
+  await assert.rejects(validarPin(sesionAnterior),/sesión venció/)
+  await call('pda_cerrar_sesion_pin($1,$2,$3)',[dispositivoPin.id,dispositivoPin.clave,sesionPin])
+  await assert.rejects(validarPin(),/sesión venció/)
+  sesionPin=(await loginPin()).sesion
+  await db.exec('reset role')
+  await db.query('update identity_membresias set activo=false where tenant_id=$1 and usuario_id=$2',[T1,cuentas.supervisor.id])
+  await db.exec('set role anon')
+  await assert.rejects(validarPin(),/no autorizada/)
+  assert.equal(await call('auth.uid()'),null)
+  await db.exec('reset role')
+  await db.query('update identity_membresias set activo=true where tenant_id=$1 and usuario_id=$2',[T1,cuentas.supervisor.id])
+  await db.exec('set role authenticated');await login('supervisor')
+  await revocar(dispositivoPin)
+  await db.exec('set role anon');await login(null)
+  await assert.rejects(validarPin(),/revocado/)
+  await assert.rejects(loginPin(),/revocado/)
 })
