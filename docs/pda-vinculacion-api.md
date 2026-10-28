@@ -11,11 +11,10 @@ por `pda_operar` sigue pendiente.
 Los RPC de vinculación y configuración requieren una cuenta Supabase Auth y el
 rol `authenticated`. En ellos el actor se resuelve desde `auth.uid()` e Identity
 & Access; no se aceptan usuario, rol ni permisos suministrados por la interfaz.
-El correo y contraseña validan la cuenta una sola vez al vincular o recuperar
-el PIN. `20261028074652_pda_acceso_dni_pin.sql` añade el ingreso diario con DNI y
-PIN de 4 dígitos en un equipo vinculado; sus RPC específicos admiten el rol
-`anon` con credencial de dispositivo y token de sesión propios. Los RPC de
-cuenta anteriores siguen exigiendo Supabase Auth.
+El correo y contraseña validan la cuenta una sola vez al vincular.
+`20261028160710_pda_ingreso_solo_dni.sql` restaura el ingreso diario solo con
+DNI en un equipo vinculado, sin PIN. El cliente operativo anónimo usa la
+credencial de instalación; los RPC de cuenta siguen exigiendo Supabase Auth.
 
 El QR permite vincular nuevas instalaciones de una empresa; no es una sesión.
 Un administrador con `company.manage` o supervisor con `harvest.manage` lo genera.
@@ -64,7 +63,25 @@ No hay una función de cambio de empresa ni de borrado de historial en esta fase
 
 ## RPC de la aplicación
 
-La ampliación `20261028074652_pda_acceso_dni_pin.sql` incorpora:
+La ampliación `20261028160710_pda_ingreso_solo_dni.sql` incorpora
+`pda_preparar_ingreso_dni(p_dispositivo_id, p_credencial, p_dni)`.
+Solo admite `anon`; comprueba la credencial del dispositivo y su revocación,
+empresa activa, módulo HARVEST y trabajador activo con acceso al PWA. Reutiliza
+las reglas anteriores de `validar_operador_campanias` y filtra las campañas a
+la empresa del equipo. No solicita PIN, ni emite JWT, ni adopta la cuenta
+utilizada para vincular. Los rechazos operativos conocidos devuelven `42501`
+para impedir que el cliente use una autorización offline anterior.
+
+La respuesta contiene `dispositivo`, `contexto`, `operador`, `validadoEn` y
+`autorizadoHasta` (medianoche de Lima). El marcador `contexto.usuarioId` es la
+identidad de la membresía o el trabajador en operadores anteriores; identifica
+al operador en la caché, sin representar una sesión Auth del portal.
+La función pública es invoker y delega en una función privada con búsqueda
+vacía y grants específicos. No se cambia el acceso obligatorio ni se borran
+datos o credenciales de instalaciones existentes.
+
+La ampliación histórica `20261028074652_pda_acceso_dni_pin.sql` incorporó estos
+RPC, que se conservan por compatibilidad y ya no son consumidos por la PWA:
 
 | RPC | Autorización y resultado |
 | --- | --- |
@@ -88,7 +105,8 @@ La ampliación `20261027181414_pda_ingreso_supervisor.sql` añade
 `pda_obtener_contexto` y `operador`, derivado de la cuenta autenticada y su
 trabajador de la empresa vinculada. Solo incluye campañas activas autorizadas
 de esa empresa; si no tiene asignaciones devuelve `operador: null`. No acepta
-un DNI ni un actor desde el cliente. La PWA lo usa al abrir y validar la jornada.
+un DNI ni un actor desde el cliente. La PWA lo conserva para recuperar una
+vinculación pendiente con cuenta autenticada.
 
 `pda_vincular_dispositivo(p_token, p_dispositivo_id, p_credencial, p_nombre)`
 devuelve `dispositivo` y `contexto`. El nombre admite de 1 a 80 caracteres.
@@ -171,7 +189,7 @@ roles `anon` y `authenticated`, hashes, vencimiento, revocación, aislamiento,
 permisos actuales, reintentos, las cuatro operaciones reales y las guardas de
 transición. El proveedor Auth se simula con `auth.uid()` en la fixture.
 
-Resultado de esta entrega: 634 pruebas aprobadas, 0 fallidas, incluidas las catorce
+Resultado de esta entrega: 636 pruebas aprobadas, 0 fallidas, incluidas las dieciséis
 pruebas de vinculación e ingreso. `npm run verify:core` confirma que los 109 archivos
 del paquete instalado coinciden con la fuente canónica de las Edge Functions.
 
@@ -181,8 +199,11 @@ El CLI se usó para crear la migración. `db advisors --local` y `migration list
 pruebas locales; queda pendiente el análisis del CLI en un entorno Supabase y
 la prueba de extremo a extremo con Auth y la PWA. El 2026-10-28 se aplicó la
 ampliación `pda_acceso_dni_pin` en Quijas-SCC y se verificaron catálogo, RLS,
-privilegios y disponibilidad en la API. No se configuraron PIN ni sesiones de
-usuarios reales durante esta comprobación; la nueva PWA sigue en desarrollo local.
+privilegios y disponibilidad en la API. Ese mismo día se aplicó
+`pda_ingreso_solo_dni`, con revisión de privilegios, rechazo de equipos no
+vinculados y sin avisos nuevos en los asesores de seguridad. No se inició
+sesión con usuarios reales durante estas comprobaciones. La PWA con ingreso
+solo DNI está preparada localmente; su publicación sigue pendiente.
 
 La organización de funciones y privilegios sigue la
 [documentación de funciones de Supabase](https://supabase.com/docs/guides/database/functions).

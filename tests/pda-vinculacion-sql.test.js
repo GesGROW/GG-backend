@@ -497,3 +497,64 @@ test('sesión PIN no cambia de actor con un JWT ajeno y revalida permisos; salir
   await assert.rejects(validarPin(),/revocado/)
   await assert.rejects(loginPin(),/revocado/)
 })
+
+test('ingreso solo DNI exige PDA vinculado y limita campañas a su empresa sin necesitar PIN', async () => {
+  await db.exec('reset role')
+  await db.exec(read('20261028160710_pda_ingreso_solo_dni.sql'))
+  assert.equal(await call("has_function_privilege('authenticated','pda_preparar_ingreso_dni(uuid,text,text)','execute')"), false)
+  assert.equal(await call("(select prosecdef from pg_proc where oid='public.pda_preparar_ingreso_dni(uuid,text,text)'::regprocedure)"), false)
+  await db.exec('set role authenticated'); await login('supervisor')
+  const d = nuevoPda()
+  await vincular((await generar()).token, d)
+  const ingreso = (dni = '78561234', equipo = d) => call('pda_preparar_ingreso_dni($1,$2,$3)', [equipo.id,equipo.clave,dni])
+  await db.exec('set role anon'); await login(null)
+  const r = await ingreso()
+  assert.equal(r.operador.dni, '78561234')
+  assert.equal(r.contexto.usuarioId, cuentas.supervisor.id)
+  assert.equal(r.contexto.tenantId, T1)
+  assert.ok(r.operador.campanias.length > 0)
+  assert.ok(r.operador.campanias.every(c => c.tenant_id === T1))
+  await assert.rejects(ingreso('78561234', {...d, clave: secreto()}), /no autorizado/)
+  await assert.rejects(ingreso('00000000'), /DNI no autorizado/)
+  await assert.rejects(ingreso('123'), /8 dígitos/)
+  for (const [revocarSql, restaurarSql, args] of [
+    ['update identity_membresias set activo=false where usuario_id=$1', 'update identity_membresias set activo=true where usuario_id=$1', [cuentas.supervisor.id]],
+    ["update tenants set estado='SUSPENDIDA' where id=$1", "update tenants set estado='ACTIVA' where id=$1", [T1]],
+    ["update platform_modulos set disponible=false where codigo='HARVEST'", "update platform_modulos set disponible=true where codigo='HARVEST'", []]
+  ]) {
+    await db.exec('reset role'); await db.query(revocarSql,args); await db.exec('set role anon')
+    await assert.rejects(ingreso(), e => e.code === '42501')
+    await db.exec('reset role'); await db.query(restaurarSql,args); await db.exec('set role anon')
+    assert.equal((await ingreso()).operador.dni, '78561234')
+  }
+  await db.exec('set role authenticated'); await login('supervisor'); await revocar(d)
+  await db.exec('set role anon'); await login(null)
+  await assert.rejects(ingreso(), /revocado/)
+})
+
+test('ingreso DNI conserva operadores anteriores y rechaza un trabajador de otra empresa', async () => {
+  await db.exec('reset role')
+  const worker = (await db.query(`insert into trabajadores(tenant_id,dni,nombres,apellidos,activo)
+    values($1,'66778899','Operador','Anterior',true) returning id`, [T1])).rows[0].id
+  await db.query('insert into usuarios_app(tenant_id,trabajador_id,activo) values($1,$2,true)', [T1,worker])
+  await db.query("insert into trabajador_campania_rol(trabajador_id,campania_id,rol,activo) values($1,$2,'SUPERVISORA',true)", [worker,propio.campaniaId])
+  await db.exec('set role authenticated'); await login('supervisor')
+  const d = nuevoPda(); await vincular((await generar()).token,d)
+  await db.exec('set role anon'); await login(null)
+  const ingreso = () => call('pda_preparar_ingreso_dni($1,$2,$3)', [d.id,d.clave,'66778899'])
+  const r = await ingreso()
+  assert.equal(r.operador.dni, '66778899')
+  assert.equal(r.contexto.usuarioId, worker)
+  assert.ok(r.operador.campanias.every(c => c.tenant_id === T1))
+  await db.exec('reset role')
+  await db.query('update usuarios_app set activo=false where trabajador_id=$1',[worker])
+  await db.exec('set role anon')
+  await assert.rejects(ingreso(), e => e.code === '42501')
+  await db.exec('reset role')
+  await db.query('update usuarios_app set activo=true where trabajador_id=$1',[worker])
+  const ajeno = (await db.query(`insert into trabajadores(tenant_id,dni,nombres,apellidos,activo)
+    values($1,'55667788','Operador','Ajeno',true) returning id`, [T2])).rows[0].id
+  await db.query('insert into usuarios_app(tenant_id,trabajador_id,activo) values($1,$2,true)', [T2,ajeno])
+  await db.exec('set role anon')
+  await assert.rejects(call('pda_preparar_ingreso_dni($1,$2,$3)', [d.id,d.clave,'55667788']), /DNI no autorizado/)
+})
