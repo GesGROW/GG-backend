@@ -1,3 +1,7 @@
 # La función verifica el JWT de usuario explícitamente con Auth antes de SQL.
 [functions.invitar-usuario]
 verify_jwt = false
+
+# Valida el usuario con Auth antes de consultar WeatherAPI.
+[functions.clima]
+verify_jwt = false
