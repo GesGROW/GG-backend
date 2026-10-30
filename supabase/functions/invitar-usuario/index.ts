@@ -1,17 +1,19 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.117.2'
 import { crearProvisionarUsuario } from '../_shared/core/src/contexts/identity-access/index.js'
 import { crearHandlerInvitacion } from './handler.js'
-import { resolverOrigenPortal } from './configuracion.js'
+import { resolverOrigenPortal, resolverOrigenesPortal } from './configuracion.js'
 import deployment from './deployment.json' with { type: 'json' }
 
 const url = Deno.env.get('SUPABASE_URL')!
 const publicKey = Deno.env.get('SUPABASE_ANON_KEY')!
 const serverKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-const portalOrigin = resolverOrigenPortal({
+const configuracionOrigen = {
   supabaseUrl: url,
   portalOrigin: Deno.env.get('PORTAL_ORIGIN'),
   deployment
-})
+}
+const portalOrigin = resolverOrigenPortal(configuracionOrigen)
+const allowedOrigins = resolverOrigenesPortal(configuracionOrigen)
 // Destino fijo del servidor, nunca una URL suministrada por React.
 const destinoInvitacion = (id: string) => {
   const destino = new URL('/aceptar-invitacion', portalOrigin)
@@ -33,6 +35,7 @@ async function consulta(
 Deno.serve(
   crearHandlerInvitacion({
     portalOrigin,
+    allowedOrigins,
     crearCaso(authorization: string) {
       const user = createClient(url, publicKey, {
         global: { headers: { Authorization: authorization } },

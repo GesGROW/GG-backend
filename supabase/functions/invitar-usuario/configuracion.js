@@ -4,6 +4,20 @@ export function resolverOrigenPortal({ supabaseUrl, portalOrigin, deployment }) 
     portalOrigin ??
     (supabaseUrl === deployment.supabaseUrl ? deployment.portalOrigin : '')
   if (!origen) throw new Error('PORTAL_ORIGIN no configurado para este proyecto.')
+  return validarOrigen(origen)
+}
+
+export function resolverOrigenesPortal(configuracion) {
+  const { supabaseUrl, deployment } = configuracion
+  const origen = resolverOrigenPortal(configuracion)
+  const adicionales =
+    supabaseUrl === deployment.supabaseUrl
+      ? [deployment.portalOrigin, ...(deployment.allowedOrigins ?? [])]
+      : []
+  return [...new Set([origen, ...adicionales].map(validarOrigen))]
+}
+
+function validarOrigen(origen) {
   const url = new URL(origen)
   if (
     url.origin !== origen ||

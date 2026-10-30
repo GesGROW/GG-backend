@@ -85,12 +85,8 @@ con `auth.getUser(jwt)` antes de cualquier llamada de aprovisionamiento; SQL val
 de nuevo los permisos de empresa. Se conserva el acceso privilegiado únicamente
 en el runtime del servidor.
 
-`PORTAL_ORIGIN` sigue siendo la configuración preferida del servidor. Si no está
-definida, `deployment.json` permite exclusivamente `http://localhost:5174` en el
-proyecto `https://mavecfdsrnyfozzukytl.supabase.co`, origen confirmado por el usuario.
-Otro proyecto sin configuración falla; no se toma el origen de la petición para
-formar enlaces ni se permite CORS con comodín. Para cambiar de hosting hay que
-configurar `PORTAL_ORIGIN` y la lista de redirecciones de Auth.
+En ese despliegue inicial se utilizó localhost como destino. La actualización
+del 29 de octubre siguiente reemplaza ese destino por el portal publicado.
 
 Verificación remota sin envíos: preflight permitido 204, origen ajeno 403, petición
 sin sesión 401 y JWT inválido 401. Continuaban 1 cuenta y 0 invitaciones después
@@ -98,7 +94,76 @@ de las pruebas. Pasaron 20 pruebas locales de aprovisionamiento y SQL de accesos
 No se envió ni reintentó automáticamente ningún correo real; el usuario puede
 retomar la solicitud desde el botón «Reintentar envío» del portal.
 
+## Corrección del 29 de octubre de 2026: dominio publicado y carga del owner
+
+Los preflight del portal publicado devolvían 403 porque sólo se admitía el
+origen local. La función `invitar-usuario`, versión 2, admite exactamente
+`https://gg-portal-beige.vercel.app` y `http://localhost:5174`, conservando la
+validación de sesión y permisos. Se verificaron 204 en ambos orígenes, 403 para
+un dominio ajeno y 401 sin sesión. No se enviaron correos de prueba.
+
+`PORTAL_ORIGIN` continúa siendo la configuración preferida del servidor. Para
+Quijas-SCC, `deployment.json` ahora fija el destino de correo en
+`https://gg-portal-beige.vercel.app/aceptar-invitacion?invitacion=<uuid>`.
+La lista CORS de desarrollo no cambia ese destino. Otro proyecto sin
+configuración falla; nunca se utiliza el Origin de la petición para crear enlaces.
+
+Se comprobó por separado que Auth todavía tenía como URL base
+`http://localhost:3000` y descartaba el destino publicado, incluso con el
+parámetro de invitación. La configuración corregida en
+[URL Configuration](https://supabase.com/dashboard/project/mavecfdsrnyfozzukytl/auth/url-configuration) es:
+
+- Site URL: `https://gg-portal-beige.vercel.app`.
+- Redirect URLs: permitir `https://gg-portal-beige.vercel.app/**`, conservando las
+  demás URLs necesarias de la aplicación.
+- Las plantillas de invitación y acceso deben conservar `{{ .ConfirmationURL }}`.
+
+Comprobar después con `node scripts/verificar-redireccion-invitaciones.mjs`.
+Usa un token ficticio, no sigue redirecciones, no consume enlaces de personas y
+no envía correos. Comprueba destino por defecto, activación, acceso y rechazo
+de un dominio ajeno. Los correos anteriores pueden conservar su destino
+anterior; el cambio no reescribe mensajes entregados.
+
+En el portal, Módulos y Usuarios y accesos usan skeletons con los mismos
+contenedores, columnas y puntos de adaptación que el contenido. El contenido
+listo aparece en 160 ms y los bloques conservan el barrido compartido, respetando
+movimiento reducido. Las filas compactas mantienen altura y permiten consultar
+nombre, correo y rol completos mediante su atributo title.
+Se compararon dimensiones antes y después de cargar en 1920, 1440, 1024,
+768, 390 y 320 px, con una cuenta y con listado vacío, sin desplazamientos
+de los contenedores ni desbordamiento de la página. Pasaron 156 pruebas de
+aplicación, 318 de presentación y la compilación de producción del portal;
+10 pruebas de aprovisionamiento y la verificación del core en backend.
+
+El 30 de octubre se verificaron las cuatro redirecciones remotas correctamente
+hacia el portal publicado. Se corrigió además el 404 de Vercel al abrir
+directamente `/aceptar-invitacion`: `portal/vercel.json` reescribe las rutas de
+la SPA hacia `index.html`. Activación con parámetro de invitación, Usuarios,
+Módulos y Login devolvieron 200; el JavaScript continuó sirviéndose como recurso
+estático. No se consumió ningún enlace real ni se enviaron correos de prueba.
+Los skeletons del owner se publicaron en `9edc41e` y la corrección de rutas en
+`4d73186`. La revisión final reservó dos filas en Usuarios y verificó las
+dimensiones en los seis anchos indicados, con 23 pruebas dirigidas aprobadas.
+
 ## Verificación
+
+### Límite de correo, 30 de octubre de 2026
+
+Los intentos de las 09:14–09:18 (Lima) devolvieron en Auth
+`429: email rate limit exceeded`. La solicitud afectada continuó PENDIENTE,
+sin fecha de entrega. No fue un fallo de rutas ni una entrega confirmada.
+La versión 3 de `invitar-usuario` devuelve HTTP 429 con el código seguro
+`EMAIL_RATE_LIMIT`, y el adaptador del Portal muestra un mensaje específico
+para esperar y reintentar la misma invitación. No expone el texto interno del
+proveedor ni reintenta automáticamente.
+
+La cuota se administra en Auth y en el proveedor SMTP. La corrección del mensaje
+no cambia esa cuota ni configura un proveedor. Ver
+[límites de Auth](https://supabase.com/docs/guides/auth/rate-limits) y
+[configuración SMTP](https://supabase.com/docs/guides/auth/auth-smtp).
+Pasaron 11 pruebas de aprovisionamiento, 16 de adaptadores/administración,
+12 del formulario de accesos y la compilación del Portal. No se enviaron correos
+reales ni se modificaron invitaciones durante las comprobaciones.
 
 Pruebas de PostgreSQL embebido con ACL y pertenencia entre empresas, aprovisionamiento y reintentos, adapters de enlaces y sesiones, activación en React, login y registro. Revisión en navegador a 1920, 1440, 1024, 390 y 320 px.
 

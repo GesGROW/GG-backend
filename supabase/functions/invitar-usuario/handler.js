@@ -1,12 +1,18 @@
 // Transporte HTTP reemplazable; sin credenciales ni SDK. La composición del
 // proveedor y del repositorio privilegiado sólo existe en index.ts del servidor.
-export function crearHandlerInvitacion({ crearCaso, portalOrigin }) {
+export function crearHandlerInvitacion({
+  crearCaso,
+  portalOrigin,
+  allowedOrigins = []
+}) {
+  const permitidos = new Set([portalOrigin, ...allowedOrigins])
   return async (request) => {
     const origin = request.headers.get('origin')
     const headers = {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-store',
-      'Access-Control-Allow-Origin': portalOrigin,
+      'Access-Control-Allow-Origin':
+        origin && permitidos.has(origin) ? origin : portalOrigin,
       Vary: 'Origin',
       'Access-Control-Allow-Headers':
         'authorization, apikey, content-type, x-client-info',
@@ -14,7 +20,7 @@ export function crearHandlerInvitacion({ crearCaso, portalOrigin }) {
     }
     const response = (body, status = 200) =>
       new Response(JSON.stringify(body), { status, headers })
-    if (!portalOrigin || (origin && origin !== portalOrigin))
+    if (!portalOrigin || (origin && !permitidos.has(origin)))
       return response({ error: 'Origen no autorizado.' }, 403)
     if (request.method === 'OPTIONS')
       return new Response(null, { status: 204, headers })
@@ -49,6 +55,15 @@ export function crearHandlerInvitacion({ crearCaso, portalOrigin }) {
       return response(await provisionar(body))
     } catch (error) {
       if (error?.status === 401) return response({ error: 'Sesión expirada.' }, 401)
+      if (error?.status === 429 && error?.code === 'over_email_send_rate_limit')
+        return response(
+          {
+            code: 'EMAIL_RATE_LIMIT',
+            error:
+              'Se alcanzó el límite temporal de envío de correos. Espera antes de reintentar esta misma invitación.'
+          },
+          429
+        )
       if (error?.code === '42501')
         return response(
           { error: 'No tiene autorización para este usuario o empresa.' },

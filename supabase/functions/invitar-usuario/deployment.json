@@ -1,4 +1,5 @@
 {
   "supabaseUrl": "https://mavecfdsrnyfozzukytl.supabase.co",
-  "portalOrigin": "http://localhost:5174"
+  "portalOrigin": "https://gg-portal-beige.vercel.app",
+  "allowedOrigins": ["http://localhost:5174"]
 }

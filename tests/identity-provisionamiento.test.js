@@ -2,7 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { crearProvisionarUsuario } from '@gesgrow/core/contexts/identity-access/index.js'
 import { crearHandlerInvitacion } from '../supabase/functions/invitar-usuario/handler.js'
-import { resolverOrigenPortal } from '../supabase/functions/invitar-usuario/configuracion.js'
+import {
+  resolverOrigenPortal,
+  resolverOrigenesPortal
+} from '../supabase/functions/invitar-usuario/configuracion.js'
 
 function fixture({ existente = false } = {}) {
   const calls = [],
@@ -188,6 +191,72 @@ const datos = {
   nombre: 'U',
   roles: []
 }
+test('producción y desarrollo tienen preflight autorizado sin abrir otros dominios ni ejecutar el alta', async () => {
+  const deployment = {
+    supabaseUrl: 'https://proyecto.supabase.co',
+    portalOrigin: 'https://gg-portal-beige.vercel.app',
+    allowedOrigins: ['http://localhost:5174']
+  }
+  const allowedOrigins = resolverOrigenesPortal({
+    supabaseUrl: deployment.supabaseUrl,
+    deployment
+  })
+  assert.deepEqual(allowedOrigins, [
+    'https://gg-portal-beige.vercel.app',
+    'http://localhost:5174'
+  ])
+  const handler = crearHandlerInvitacion({
+    portalOrigin: deployment.portalOrigin,
+    allowedOrigins,
+    crearCaso: () => {
+      throw new Error('No debe crear solicitudes en preflight')
+    }
+  })
+  for (const origin of allowedOrigins) {
+    const r = await handler(
+      new Request('https://backend.example.test/invitar', {
+        method: 'OPTIONS',
+        headers: { origin }
+      })
+    )
+    assert.equal(r.status, 204)
+    assert.equal(r.headers.get('access-control-allow-origin'), origin)
+    assert.equal(r.headers.get('vary'), 'Origin')
+  }
+  for (const origin of [
+    'https://gg-portal-beige.vercel.app.ajeno.test',
+    'https://otra-vista.vercel.app',
+    'http://localhost:5175'
+  ]) {
+    assert.equal(
+      (
+        await handler(
+          new Request('https://backend.example.test/invitar', {
+            method: 'OPTIONS',
+            headers: { origin }
+          })
+        )
+      ).status,
+      403
+    )
+  }
+  assert.throws(
+    () =>
+      resolverOrigenesPortal({
+        supabaseUrl: deployment.supabaseUrl,
+        deployment: { ...deployment, allowedOrigins: ['https://ajeno.test/ruta'] }
+      }),
+    /origen/
+  )
+  assert.deepEqual(
+    resolverOrigenesPortal({
+      supabaseUrl: 'https://otro.supabase.co',
+      portalOrigin: 'https://otro-portal.example.test',
+      deployment
+    }),
+    ['https://otro-portal.example.test']
+  )
+})
 const request = (body = datos, headers = {}, method = 'POST') =>
   new Request('https://backend.example.test/invitar', {
     method,
@@ -236,4 +305,31 @@ test('errores del proveedor y del servidor se sanitizan sin exponer secretos', a
     assert.equal(response.status, status)
     assert.doesNotMatch(await response.text(), /credencial-privilegiada|SQL interno/)
   }
+})
+
+test('la cuota de correo devuelve 429 seguro y permite reintentar la misma solicitud sin reintentos automáticos', async () => {
+  const solicitudes = []
+  const handler = crearHandlerInvitacion({
+    portalOrigin: origin,
+    crearCaso: () => async (solicitud) => {
+      solicitudes.push(solicitud)
+      if (solicitudes.length === 1)
+        throw {
+          status: 429,
+          code: 'over_email_send_rate_limit',
+          message: 'Detalle privado del proveedor'
+        }
+      return { usuarioId: 'u' }
+    }
+  })
+  const fallo = await handler(request())
+  assert.equal(fallo.status, 429)
+  const body = await fallo.json()
+  assert.equal(body.code, 'EMAIL_RATE_LIMIT')
+  assert.match(body.error, /límite temporal de envío de correos/)
+  assert.doesNotMatch(body.error, /Detalle privado/)
+  assert.equal(solicitudes.length, 1)
+  const reintento = await handler(request())
+  assert.equal(reintento.status, 200)
+  assert.deepEqual(solicitudes[0], solicitudes[1])
 })
