@@ -1,10 +1,36 @@
 # Backend de vinculación de PDA
 
 Migración: `supabase/migrations/20261027152741_pda_vinculacion_dispositivos.sql`.
-Primera entrega local, 2026-10-27. No modifica por defecto el acceso de los PDA
-actuales. El portal consume los RPC de gestión. La PWA implementa la primera
-pantalla y el ingreso de supervisor; la sustitución de todos los RPC operativos
-por `pda_operar` sigue pendiente.
+Primera entrega local, 2026-10-27. El portal consume los RPC de gestión.
+La ampliación `20261030184601_pda_autorizacion_por_solicitud.sql` y PWA 0.1.1
+protegen las rutas operativas actuales sin cambiar sus payloads ni UUID.
+
+## Peticiones operativas desde PWA 0.1.1
+
+Cada RPC de campo por DNI envía `x-gesgrow-device-id`, `x-gesgrow-device-key`
+y `x-gesgrow-operator-dni`. SQL valida el secreto contra su hash, la revocación,
+empresa, módulo y autorización actual del operador para la campaña. Las cabeceras
+no otorgan permisos por sí mismas. El DNI del payload debe coincidir con el de
+la petición. El ingreso diario sigue usando solo DNI en un PDA ya vinculado;
+correo y contraseña siguen siendo necesarios para la vinculación inicial.
+
+Los helpers internos viven en `pda_privado` y no admiten llamadas directas.
+No registrar estas cabeceras en logs ni enviar la credencial como parámetro de
+una URL. El cliente Auth de la cuenta no recibe las cabeceras del dispositivo.
+
+La credencial se exige en estas rutas incluso con `accesoVinculadoObligatorio=false`.
+Ese interruptor conserva su función para los comandos IAM autenticados mediante
+`pda_operar`; ya no permite reabrir el acceso operativo por DNI sin dispositivo.
+Una denegación conserva la intención offline y su UUID para reintentar después
+de renovar el acceso o corregir el permiso. No se descarta como conflicto productivo.
+
+Para publicar, preparar y comprobar ambos artefactos; distribuir primero la PWA
+actualizada, confirmar la actualización de los PDA con trabajo pendiente y aplicar
+después la migración. Una instalación anterior que no se haya actualizado quedará
+bloqueada por el servidor. Mantener el origen HTTPS y los datos IndexedDB; no
+desinstalar, borrar almacenamiento ni cambiar de origen para forzar la actualización.
+Si se aplica la migración antes, esperar una interrupción hasta actualizar los PDA.
+No desactivar la protección como solución a una actualización pendiente.
 
 ## Autenticación y almacenamiento
 
@@ -163,31 +189,28 @@ ruta ni cambiar el autor al iniciar sesión con otro supervisor. Los rechazos
 revierten todas las escrituras. La revocación y los permisos se comprueban
 también antes de devolver recibos existentes.
 
-El nuevo contrato todavía no sustituye la descarga de snapshots/caché, el alta
-de jaberos ni los payloads de la cola antigua. La integración PWA debe resolver
-esos contratos antes de activar el acceso obligatorio.
+La PWA 0.1.1 conserva los payloads de snapshots, caché, jaberos y cola; los envía
+con el transporte por petición descrito al comienzo de este documento. `pda_operar`
+sigue disponible para los comandos IAM autenticados.
 
 ## Transición por empresa
 
-La migración deja `accesoVinculadoObligatorio = false`. En ese estado los nuevos
-RPC ya comprueban el equipo, mientras las rutas existentes conservan su acceso.
-La revocación de un dispositivo afecta al contrato nuevo; no convierte por sí
-sola las rutas antiguas de DNI en acceso autenticado.
+La migración inicial dejaba `accesoVinculadoObligatorio = false`. La ampliación
+del 30 de octubre exige credencial en las rutas de campo por DNI con independencia
+de ese valor, y comprueba la revocación también en los RPC existentes.
 
-Después de migrar los flujos de la PWA y resolver su cola pendiente, el
-administrador puede activar `pda_configurar_acceso(tenant, true)`:
+Con `pda_configurar_acceso(tenant, true)`:
 
 - Las operaciones IAM que exigen `harvest.operate` deben entrar por `pda_operar`.
-- La autorización legacy por campaña y `validar_operador` rechazan el acceso
-  por DNI sin sesión y equipo verificados, incluido el alta legacy de jaberos.
+- La autorización operativa por campaña y `validar_operador` aceptan el transporte
+  por DNI con credencial de dispositivo verificada, incluido el alta de jaberos.
 - Unas cabeceras enviadas por el cliente no habilitan una ruta IAM sin recibo.
 - La administración del portal y las consultas con otros permisos conservan
   sus propias reglas; este control está dirigido a la escritura operativa.
 
-La lista legacy de campañas por DNI no se sustituye en esta fase; el control
-bloquea las rutas de operación, no convierte ese listado en una consulta privada.
-La desactivación administrativa permite volver al modo de compatibilidad y debe
-tratarse como una decisión de transición, no como una acción rutinaria del PDA.
+El listado de campañas por DNI exige ahora la misma credencial y se resuelve
+dentro de la empresa vinculada. Desactivar el interruptor no habilita listados
+ni escrituras por DNI sin esa credencial.
 
 ## Verificación
 
@@ -201,15 +224,16 @@ roles `anon` y `authenticated`, hashes, vencimiento, revocación, aislamiento,
 permisos actuales, reintentos, las cuatro operaciones reales y las guardas de
 transición. El proveedor Auth se simula con `auth.uid()` en la fixture.
 
-Resultado de esta entrega: 637 pruebas aprobadas, 0 fallidas, incluidas las diecisiete
-pruebas de vinculación e ingreso. `npm run verify:core` confirma que los 109 archivos
-del paquete instalado coinciden con la fuente canónica de las Edge Functions.
+Las regresiones del 30 de octubre cubren el acceso con y sin el interruptor,
+cabeceras inválidas, revocación, permisos, un DNI en dos empresas y el adapter
+del cliente vigente contra SQL. `npm run verify:core` comprueba que los 109
+archivos del paquete instalado coinciden con la fuente canónica de las Edge Functions.
 
 El CLI se usó para crear la migración. `db advisors --local` y `migration list
 --local` no pudieron conectar porque no hay un servidor Supabase local en
 `127.0.0.1:54322`. Los controles de catálogo, grants y RLS están cubiertos por las
 pruebas locales; queda pendiente el análisis del CLI en un entorno Supabase y
-la prueba de extremo a extremo con Auth y la PWA. El 2026-10-28 se aplicó la
+la prueba con Auth real y PDA físico. El 2026-10-28 se aplicó la
 ampliación `pda_acceso_dni_pin` en Quijas-SCC y se verificaron catálogo, RLS,
 privilegios y disponibilidad en la API. Ese mismo día se aplicó
 `pda_ingreso_solo_dni`, con revisión de privilegios, rechazo de equipos no

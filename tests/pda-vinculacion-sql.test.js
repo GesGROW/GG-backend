@@ -25,6 +25,10 @@ const operar = (d, tipo, datos, id = crypto.randomUUID(), campania = A) =>
   call('pda_operar($1::uuid,$2::text,$3::uuid,$4::uuid,$5::text,$6::jsonb)', [d.id, d.clave, campania, id, tipo, datos])
 const nuevoPda = () => ({ id: crypto.randomUUID(), clave: secreto() })
 let qr, dispositivo, propio
+let equipoActual
+const cabecerasPda = (d, dni = '78561234') => db.query("select set_config('request.headers',$1,false)", [JSON.stringify(d ? {
+  'x-gesgrow-device-id': d.id, 'x-gesgrow-device-key': d.clave, 'x-gesgrow-operator-dni': dni
+} : {})])
 
 before(async () => {
   await prepararHarvestSql(db)
@@ -671,4 +675,156 @@ test('conciliar un lote dividido conserva ambas asignaciones y exige una decisi�
   await assert.rejects(db.query('select * from pda_privado.conciliaciones_lote'),/permission denied/)
   await db.exec('set role anon')
   await assert.rejects(db.query('select * from pda_privado.conciliaciones_lote'),/permission denied/)
+})
+
+test('el transporte actual cierra rutas directas y permite operar con la guarda obligatoria y el mismo UUID', async () => {
+  await db.exec('reset role')
+  await db.exec(read('20261030184601_pda_autorizacion_por_solicitud.sql'))
+  for (const firma of ['pda_privado.operador_cuenta(uuid,varchar)', 'pda_privado.operador_empresa(uuid,varchar)', 'pda_privado.equipo_solicitud()']) {
+    for (const rol of ['anon', 'authenticated', 'service_role'])
+      assert.equal(await call('has_function_privilege($1,$2,\'execute\')', [rol, firma]), false)
+  }
+  await db.exec('set role authenticated'); await login('supervisor')
+  equipoActual = nuevoPda()
+  await vincular((await generar()).token, equipoActual)
+  await login('admin')
+  await call('pda_configurar_acceso($1::uuid,$2::boolean)', [T1, true])
+  await db.exec('set role anon'); await login(null); await cabecerasPda(null)
+  const ingreso = await call('pda_preparar_ingreso_dni($1,$2,$3)', [equipoActual.id,equipoActual.clave,'78561234'])
+  assert.equal(ingreso.operador.dni, '78561234')
+  const snapshot = () => call('harvest_obtener_snapshot($1::uuid,$2::varchar)', [propio.campaniaId,'78561234'])
+  await assert.rejects(snapshot(), e => e.code === '42501')
+  await cabecerasPda({...equipoActual,clave:secreto()})
+  await assert.rejects(snapshot(), e => e.code === '42501')
+  await db.query("select set_config('request.headers',$1,false),set_config('gesgrow.pda_solicitud',$2,false)", [
+    JSON.stringify({'x-gesgrow-device-id':equipoActual.id,'x-gesgrow-operator-dni':'78561234'}),
+    JSON.stringify({id:equipoActual.id,credencial:equipoActual.clave})
+  ])
+  await assert.rejects(snapshot(), e => e.code === '42501')
+  await db.exec("select set_config('gesgrow.pda_solicitud','',false)")
+  await cabecerasPda(equipoActual)
+  assert.equal((await snapshot()).campaniaId, propio.campaniaId)
+  await assert.rejects(call('harvest_obtener_snapshot($1::uuid,$2::varchar)', [propio.campaniaId,'47480378']), /no corresponde/)
+  await db.exec('reset role')
+  const lote = crypto.randomUUID()
+  await db.query('insert into harvest_lotes_tickets(id,campania_id,tenant_id) values($1,$2,$3)', [lote,propio.campaniaId,T1])
+  await db.query("insert into harvest_tickets(codigo,lote_id,campania_id,tenant_id) values('PDA-SEG-01',$1,$2,$3)", [lote,propio.campaniaId,T1])
+  await db.exec('set role anon')
+  const id = crypto.randomUUID()
+  const asignar = () => call('harvest_asignar_lote_tickets($1::uuid,$2::varchar,$3::varchar,$4::text,$5::uuid)', [propio.campaniaId,'78561234','33445566','PDA-SEG-01',id])
+  const primera = await asignar()
+  assert.deepEqual(await asignar(), primera)
+  await cabecerasPda(null)
+  await assert.rejects(asignar(), e => e.code === '42501')
+  await db.exec('set role authenticated'); await login('admin')
+  await call('pda_configurar_acceso($1::uuid,$2::boolean)', [T1, false])
+  await db.exec('set role anon'); await login(null)
+  await assert.rejects(snapshot(), e => e.code === '42501')
+  await cabecerasPda(equipoActual)
+  assert.equal((await snapshot()).campaniaId, propio.campaniaId)
+})
+
+test('cada RPC revalida membresía, módulo y revocación aun con cabeceras válidas', async () => {
+  const snapshot = () => call('harvest_obtener_snapshot($1::uuid,$2::varchar)', [propio.campaniaId,'78561234'])
+  await db.exec('reset role')
+  await db.query('update identity_membresias set activo=false where tenant_id=$1 and usuario_id=$2', [T1,cuentas.supervisor.id])
+  await db.exec('set role anon'); await login(null); await cabecerasPda(equipoActual)
+  await assert.rejects(snapshot(), e => e.code === '42501')
+  await db.exec('reset role')
+  await db.query('update identity_membresias set activo=true where tenant_id=$1 and usuario_id=$2', [T1,cuentas.supervisor.id])
+  await db.exec("update platform_modulos set disponible=false where codigo='HARVEST'")
+  await db.exec('set role anon')
+  await assert.rejects(snapshot(), e => e.code === '42501')
+  await db.exec('reset role')
+  await db.exec("update platform_modulos set disponible=true where codigo='HARVEST'")
+  await db.exec('set role authenticated'); await login('supervisor')
+  await revocar(equipoActual)
+  await db.exec('set role anon'); await login(null)
+  await assert.rejects(snapshot(), /revocado/)
+})
+
+test('el mismo DNI puede operar como supervisor de cuenta en A y legacy en B sin mezclar empresas', async () => {
+  await db.exec('reset role')
+  await db.query(`insert into identity_membresia_roles(tenant_id,membresia_id,rol_id)
+    select m.tenant_id,m.id,r.id from identity_membresias m join identity_roles r
+    on r.tenant_id=m.tenant_id and r.codigo='ADMIN_EMPRESA' where m.tenant_id=$1 and m.usuario_id=$2`, [T2,cuentas.ajeno.id])
+  await db.query('insert into platform_delegaciones_comerciales(tenant_id,usuario_id) values($1,$2)', [T2,cuentas.ajeno.id])
+  await db.exec('set role authenticated'); await login('ajeno')
+  await call("platform_solicitar_cambio($1::uuid,$2::uuid,'CREAR_SUSCRIPCION',$3::jsonb,'Prueba multiempresa',null)",
+    [crypto.randomUUID(),T2,{planId:'00000000-0000-4000-8000-000000000064',estado:'ACTIVA',hasta:'2099-01-01T00:00:00Z'}])
+  const hoy = await call("((clock_timestamp() at time zone 'America/Lima')::date)::text")
+  const cultivo = await call('harvest_cultivos_crear($1::uuid,$2::uuid,$3::jsonb)', [T2,crypto.randomUUID(),{
+    nombre:'Cultivo transporte B',color:'#3B64EC',variedades:['Ventura'],lotes:[{nombre:'Norte',variedades:['Ventura']}],
+    campania:{nombre:'Transporte B',fechaInicio:hoy,fechaFin:hoy}
+  }])
+  const d = nuevoPda(); await vincular((await generar(T2)).token,d)
+  await db.exec('reset role')
+  const trabajador = (await db.query("insert into trabajadores(tenant_id,dni,nombres,apellidos,activo) values($1,'78561234','Legacy','Empresa B',true) returning id", [T2])).rows[0].id
+  await db.query('insert into usuarios_app(tenant_id,trabajador_id,activo) values($1,$2,true)', [T2,trabajador])
+  await db.query("insert into trabajador_campania_rol(tenant_id,trabajador_id,campania_id,rol,activo) values($1,$2,$3,'SUPERVISORA',true)", [T2,trabajador,cultivo.campaniaId])
+  await db.exec('set role anon'); await login(null); await cabecerasPda(null)
+  const ingreso = await call('pda_preparar_ingreso_dni($1,$2,$3)', [d.id,d.clave,'78561234'])
+  assert.equal(ingreso.contexto.tenantId, T2)
+  assert.equal(ingreso.operador.campanias.length, 1)
+  assert.equal(ingreso.operador.campanias[0].id, cultivo.campaniaId)
+  await cabecerasPda(d)
+  assert.equal((await call('validar_operador_campanias($1::varchar)', ['78561234'])).tenant_id, T2)
+  await assert.rejects(call('harvest_obtener_snapshot($1::uuid,$2::varchar)', [propio.campaniaId,'78561234']), /otra empresa/)
+  await cabecerasPda(null)
+})
+
+test('la composición del cliente vigente ingresa por DNI y usa SQL protegido sin alterar UUID ni admitir un equipo revocado', async () => {
+  const { crearClientePda } = await import('@gesgrow/harvest-client-contracts/src/infrastructure/supabase/clientePda.js')
+  const { crearSupabaseBackend } = await import('@gesgrow/harvest-client-contracts/src/infrastructure/supabase/backendAdapter.js')
+  const { crearVinculacionDispositivo } = await import('@gesgrow/harvest-client-contracts/src/application/vinculacionDispositivo.js')
+  const { protegerBackendDispositivo } = await import('@gesgrow/harvest-client-contracts/src/application/protegerDispositivo.js')
+  await db.exec('set role authenticated'); await login('supervisor')
+  const d = nuevoPda(); await vincular((await generar()).token,d)
+  await login('admin'); await call('pda_configurar_acceso($1::uuid,$2::boolean)',[T1,true])
+  await db.exec('reset role')
+  const lote = crypto.randomUUID()
+  await db.query('insert into harvest_lotes_tickets(id,campania_id,tenant_id) values($1,$2,$3)',[lote,propio.campaniaId,T1])
+  await db.query("insert into harvest_tickets(codigo,lote_id,campania_id,tenant_id) values('PDA-CLIENTE-01',$1,$2,$3)",[lote,propio.campaniaId,T1])
+  await db.exec('set role anon'); await login(null); await cabecerasPda(null)
+  let instalacion = { id:d.id,credencial:d.clave,tenantId:T1,estado:'VINCULADO' }
+  const dispositivo = crearVinculacionDispositivo({
+    remoto: { ingresarConDni: (equipo,dni) => call('pda_preparar_ingreso_dni($1,$2,$3)',[equipo.id,equipo.credencial,dni]) },
+    almacen: { obtener:async()=>instalacion,guardar:async(v)=>{instalacion=v} },
+    enLinea:()=>true
+  })
+  await dispositivo.restaurar()
+  await dispositivo.iniciarConDni('78561234')
+  const enviadas = []
+  const transporte = {
+    rpc(nombre,parametros) {
+      assert.match(nombre,/^[a-z_]+$/)
+      const headers = {}
+      return {
+        setHeader(k,v) { headers[k]=v;return this },
+        then(resolve,reject) {
+          return (async()=>{
+            enviadas.push({nombre,parametros:structuredClone(parametros)})
+            await db.query("select set_config('request.headers',$1,false)",[JSON.stringify(headers)])
+            try {
+              const nombres = Object.keys(parametros)
+              for (const k of nombres) assert.match(k,/^p_[a-z_]+$/)
+              return {data:await call(nombre+'('+nombres.map((k,i)=>k+' => $'+(i+1)).join(',')+')',Object.values(parametros)),error:null}
+            } catch (e) {
+              return {data:null,error:{message:e.message,code:e.code}}
+            } finally { await cabecerasPda(null) }
+          })().then(resolve,reject)
+        }
+      }
+    }
+  }
+  const campo = protegerBackendDispositivo(crearSupabaseBackend(crearClientePda(transporte,()=>dispositivo.credencialesSolicitud())),dispositivo)
+  assert.equal((await campo.obtenerSnapshotHarvest('78561234',propio.campaniaId)).campaniaId,propio.campaniaId)
+  const datos = { dniOperador:'78561234',campaniaId:propio.campaniaId,dniCosechador:'33445566',codigoTicket:'PDA-CLIENTE-01',operacionId:crypto.randomUUID() }
+  assert.equal((await campo.asignarTicket(datos)).lote.id,lote)
+  await campo.asignarTicket(datos)
+  assert.equal(enviadas.filter(e=>e.nombre==='harvest_asignar_lote_tickets').length,2)
+  assert.ok(enviadas.filter(e=>e.nombre==='harvest_asignar_lote_tickets').every(e=>e.parametros.p_operacion_id===datos.operacionId))
+  await db.exec('set role authenticated'); await login('supervisor'); await revocar(d)
+  await db.exec('set role anon'); await login(null)
+  await assert.rejects(campo.obtenerSnapshotHarvest('78561234',propio.campaniaId),e=>e.accesoDenegado===true)
 })

@@ -11,9 +11,9 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
+    "@gesgrow/harvest-client-contracts": "file:vendor/gesgrow-harvest-client-contracts-0.1.1.tgz",
     "fake-indexeddb": "6.2.5",
-    "idb": "8.0.3",
-    "@gesgrow/harvest-client-contracts": "file:vendor/gesgrow-harvest-client-contracts-0.1.0.tgz"
+    "idb": "8.0.3"
   },
   "dependencies": {
     "@gesgrow/core": "file:vendor/gesgrow-core-0.1.0.tgz"

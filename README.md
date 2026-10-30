@@ -24,8 +24,11 @@ Los procedimientos manuales de soporte están separados de las migraciones.
 
 El [contrato de vinculación](docs/pda-vinculacion-api.md) documenta los RPC para
 generar QR, vincular y revocar dispositivos, y registrar operaciones autenticadas.
-El acceso obligatorio se activa por empresa después de integrar los clientes;
-la migración mantiene inicialmente la compatibilidad con los PDA existentes.
+Desde `20261030184601_pda_autorizacion_por_solicitud.sql`, cada petición de campo
+por DNI exige la credencial del PDA y comprueba su empresa, operador y revocación.
+Preparar primero la PWA 0.1.1 y coordinar su actualización con esa migración:
+los clientes antiguos sin credencial por petición quedan bloqueados. No borrar
+IndexedDB ni las colas para actualizar. El contrato detalla el orden de publicación.
 
 ## Edge Functions
 
