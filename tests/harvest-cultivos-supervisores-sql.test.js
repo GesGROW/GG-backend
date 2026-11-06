@@ -155,7 +155,8 @@ before(async () => {
     '202610221200_harvest_trabajadores_campania.sql',
     '202610221300_harvest_reportes_campania.sql',
     '20261022230330_harvest_supervisores_participantes.sql',
-    '20261023175011_harvest_filtros_tablas_campania.sql'
+    '20261023175011_harvest_filtros_tablas_campania.sql',
+    '20261105101201_harvest_configuracion_campania.sql'
   ])
     await db.exec(read(n))
   await db.query(
@@ -1449,4 +1450,126 @@ test('filtros nuevos rechazan rangos inválidos y conservan permisos, módulo y 
   }
 })
 
+
+
+const configuracion = (id, tenant = T1) => call('harvest_admin_configuracion_campania($1::uuid,$2::uuid)', [tenant,id])
+const guardarConfiguracion = (id,d,op=crypto.randomUUID(),tenant=T1) => call(
+  'harvest_admin_guardar_configuracion_campania($1::uuid,$2::uuid,$3::uuid,$4::jsonb)', [tenant,op,id,d])
+const datosConfiguracion = (d) => ({
+  revision:d.revision,nombre:d.nombre,fechaInicio:d.fechaInicio,fechaFin:d.fechaFin,
+  variedades:d.variedades.map(({id,nombre})=>({id,nombre})),
+  lotes:d.lotes.map(({id,nombre,activo,variedades})=>({id,nombre,activo,variedades:[...variedades]}))
+})
+
+test('configuración guarda nombres, fechas, variedades y lotes sin alterar plantillas; reintento idempotente y conflicto', async () => {
+  await login('ana')
+  const r=await crear({...datos(),nombre:'Cultivo edición'})
+  const original=await configuracion(r.campaniaId)
+  const plantilla=await db.query('select * from harvest_cultivo_lotes where cultivo_id=$1 order by id',[r.cultivoId])
+  const d=datosConfiguracion(original), v=crypto.randomUUID(), l=crypto.randomUUID(), op=crypto.randomUUID()
+  d.nombre='Campaña corregida'; d.fechaInicio=fecha(-2); d.fechaFin=fecha(45)
+  d.variedades[0].nombre='Variedad corregida'
+  d.variedades.push({id:v,nombre:'Nueva variedad'})
+  d.lotes[0].nombre='Lote corregido'
+  d.lotes[1].activo=false
+  d.lotes.push({id:l,nombre:'Lote nuevo',activo:true,variedades:[v]})
+  const resultado=await guardarConfiguracion(r.campaniaId,d,op)
+  assert.equal(resultado.nombre,d.nombre)
+  assert.equal(resultado.fechaInicio,fecha(-2))
+  assert.equal(resultado.lotes.length,3)
+  assert.equal(resultado.variedades.length,3)
+  assert.equal(resultado.lotes.find(x=>x.id===l).variedades[0],v)
+  assert.deepEqual(await guardarConfiguracion(r.campaniaId,d,op),resultado)
+  assert.deepEqual(await db.query('select * from harvest_cultivo_lotes where cultivo_id=$1 order by id',[r.cultivoId]),plantilla)
+  await assert.rejects(guardarConfiguracion(r.campaniaId,d),/configuración cambió/)
+  await assert.rejects(guardarConfiguracion(r.campaniaId,{...d,nombre:'Otra'},op),/otra intención/)
+  assert.equal((await configuracion(r.campaniaId)).nombre,d.nombre)
+})
+
+test('configuración rechaza borrado implícito, IDs ajenos y duplicados y revierte todos los cambios', async () => {
+  await login('ana')
+  const r=await crear({...datos(),nombre:'Validación edición'}), a=await configuracion(r.campaniaId)
+  const fuera=(await db.query('select id from variedades where cultivo_id<>$1 limit 1',[r.cultivoId])).rows[0].id
+  for(const mutar of [
+    d=>{d.lotes.pop()}, d=>{d.variedades.pop()},
+    d=>{d.lotes.forEach(l=>{l.activo=false})},
+    d=>{d.variedades[1].nombre=d.variedades[0].nombre.toUpperCase()},
+    d=>{d.lotes[0].variedades=[fuera]},
+    d=>{d.variedades.push({id:fuera,nombre:'Intrusa'})},
+    d=>{d.lotes[0].variedades=[]}, d=>{d.fechaFin=fecha(-1)}
+  ]) {
+    const d=datosConfiguracion(a); mutar(d)
+    await assert.rejects(guardarConfiguracion(r.campaniaId,d))
+    assert.deepEqual(await configuracion(r.campaniaId),a)
+  }
+})
+
+test('configuración conserva sesiones e historial; protege nombres, fechas y relaciones en uso', async () => {
+  await login('ana')
+  const r=await crear({...datos(),nombre:'Historial edición'}), a=await configuracion(r.campaniaId)
+  const lote=a.lotes[0], variedad=lote.variedades[0], sesion=crypto.randomUUID()
+  const rol=(await db.query("select id from trabajador_campania_rol where rol='JABERO' limit 1")).rows[0].id
+  const ua=(await db.query('select id from usuarios_app limit 1')).rows[0].id
+  await db.query(`insert into sesiones_lectura(id,lote_id,jabero_rol_id,iniciada_por_usuario_id,estado,fecha_inicio,variedad_id,tenant_id)
+    values($1,$2,$3,$4,'ACTIVA',clock_timestamp(),$5,$6)`,[sesion,lote.id,rol,ua,variedad,T1])
+  const protegida=await configuracion(r.campaniaId)
+  assert.ok(protegida.lotes.find(l=>l.id===lote.id).protegido)
+  assert.ok(protegida.variedades.find(v=>v.id===variedad).protegida)
+  for(const mutar of [
+    d=>{d.lotes.find(l=>l.id===lote.id).nombre='Cambio histórico'},
+    d=>{d.lotes.find(l=>l.id===lote.id).activo=false},
+    d=>{d.variedades.find(v=>v.id===variedad).nombre='Cambio histórico'},
+    d=>{d.fechaInicio=fecha(1)}
+  ]) {
+    const d=datosConfiguracion(protegida); mutar(d)
+    await assert.rejects(guardarConfiguracion(r.campaniaId,d),/historial|sesiones|fechas/)
+  }
+  await db.query("update sesiones_lectura set estado='CERRADA',fecha_fin=clock_timestamp() where id=$1",[sesion])
+  const d=datosConfiguracion(await configuracion(r.campaniaId))
+  d.lotes.find(l=>l.id===lote.id).activo=false
+  await guardarConfiguracion(r.campaniaId,d)
+  assert.equal((await db.query('select count(*)::int n from sesiones_lectura where id=$1',[sesion])).rows[0].n,1)
+  assert.equal((await db.query('select activo from lotes where id=$1',[lote.id])).rows[0].activo,false)
+})
+
+test('configuración conserva variedades inactivas asociadas y rechaza nuevas asociaciones', async () => {
+  await login('ana')
+  const r=await crear({...datos(),nombre:'Variedades históricas'})
+  const inicial=await configuracion(r.campaniaId)
+  const variedad=inicial.variedades.find(v=>v.nombre==='Ventura').id
+  await db.query('update variedades set activo=false where id=$1',[variedad])
+  const actual=await configuracion(r.campaniaId), d=datosConfiguracion(actual)
+  d.nombre='Nombre corregido con variedad inactiva'
+  const resultado=await guardarConfiguracion(r.campaniaId,d)
+  assert.equal(resultado.nombre,d.nombre)
+  assert.equal(resultado.variedades.find(v=>v.id===variedad).activo,false)
+  assert.ok(resultado.lotes.find(l=>l.nombre==='Norte').variedades.includes(variedad))
+  for(const nuevo of [false,true]) {
+    const intento=datosConfiguracion(resultado)
+    if(nuevo) intento.lotes.push({id:crypto.randomUUID(),nombre:'Otro sector',activo:true,variedades:[variedad]})
+    else intento.lotes.find(l=>l.nombre==='Sur').variedades.push(variedad)
+    await assert.rejects(guardarConfiguracion(r.campaniaId,intento),/nuevas asociaciones deben estar activas/)
+    assert.deepEqual(await configuracion(r.campaniaId),resultado)
+  }
+})
+
+test('configuración exige permiso, módulo y participación; RPC interna y anónimos sin acceso', async () => {
+  await login('ana')
+  const r=await crear({...datos(),nombre:'Acceso edición'}), d=datosConfiguracion(await configuracion(r.campaniaId))
+  for(const actor of ['anon','owner','campo','cora','otra']) {
+    await login(actor)
+    await assert.rejects(configuracion(r.campaniaId),/autenticada|autorizad|denegad|participante|módulo/)
+    await assert.rejects(guardarConfiguracion(r.campaniaId,d),/autenticada|autorizad|denegad|participante|módulo/)
+  }
+  await login('ana')
+  await assert.rejects(configuracion(extranjero.campaniaId,T2),/autorizad|denegad|participante/)
+  await db.query("update platform_modulos set disponible=false where codigo='HARVEST'")
+  try { await assert.rejects(configuracion(r.campaniaId),/módulo|particip/i) }
+  finally { await db.query("update platform_modulos set disponible=true where codigo='HARVEST'") }
+  for(const firma of ['harvest_admin_configuracion_campania(uuid,uuid)','harvest_admin_guardar_configuracion_campania(uuid,uuid,uuid,jsonb)']) {
+    for(const rol of ['anon','service_role']) assert.equal(await call('has_function_privilege($1,$2,\'EXECUTE\')',[rol,firma]),false)
+    assert.equal(await call('has_function_privilege(\'authenticated\',$1,\'EXECUTE\')',[firma]),true)
+  }
+  assert.equal(await call("has_function_privilege('authenticated','harvest_configuracion_campania_dto(uuid,uuid)','EXECUTE')"),false)
+})
 
