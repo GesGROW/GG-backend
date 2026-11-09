@@ -58,6 +58,7 @@ before(async () => {
   await db.exec(read('20261107042436_harvest_reportes_paquetes_general.sql'))
   await db.exec(read('20261107051630_harvest_correcciones_recipientes_y_peso_vacio.sql'))
   await db.exec(read('20261109125850_harvest_resumen_corregir_agregado_lotes.sql'))
+  await db.exec(read('20261109130537_harvest_reportes_periodo_campania.sql'))
 })
 after(() => db.close())
 
@@ -83,6 +84,12 @@ test('jarras y jabas tienen umbrales independientes, peso parcial e historial', 
  const resumen=await call("harvest_proyectar_resumen($1,'America/Lima')",[A])
  assert.equal(resumen.resumen.total_lotes_configurados,2)
  assert.equal(resumen.resumen.total_jabas,4)
+ const inicio=await call('harvest_reportes_inicio($1,$2,$3,$4)',[T,A,'DASHBOARD','GENERAL'])
+ assert.equal(inicio.datos.resumen.total_jabas,8)
+ for (const [recipiente,cantidad] of [['GENERAL',8],['JARRA',4],['JABA',4]]) {
+  const ranking=await call('harvest_reportes_inicio($1,$2,$3,$4)',[T,A,'RANKING',recipiente])
+  assert.equal(ranking.datos.ranking.find(p=>p.cosechador_dni==='88990099').total_jabas,cantidad)
+ }
  const produccion=(await call('harvest_reportes_recipiente($1,$2,$3,null,null,$4,$4,$5)',[T,A,'PRODUCCION',hoy,'JARRA'])).datos
  assert.equal(produccion.metricas.totalJabas,4)
  assert.equal(produccion.metricas.kgEstimados,5.2)
