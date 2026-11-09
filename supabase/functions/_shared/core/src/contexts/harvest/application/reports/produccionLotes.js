@@ -1,3 +1,5 @@
+import { normalizarRecipientes } from './recipientes.js'
+
 export const ORDEN_PRODUCCION_LOTES = Object.freeze({
   MAS_JABAS: 'mas-jabas',
   AZ: 'az'
@@ -34,11 +36,12 @@ export function normalizarProduccionLotes(data) {
       variedad: String(fila.variedad ?? '').trim(),
       ...(fila.variedad_id ? { variedad_id: String(fila.variedad_id).trim() } : {}),
       total_jabas: numeroSeguro(fila.total_jabas),
+      ...normalizarRecipientes(fila),
       total_cosechadores: numeroSeguro(fila.total_cosechadores),
       total_sesiones: numeroSeguro(fila.total_sesiones),
       ultima_lectura: fila.ultima_lectura ? String(fila.ultima_lectura) : null
     }))
-    .filter((fila) => fila.lote_id && fila.total_jabas > 0)
+    .filter((fila) => fila.lote_id && (fila.total_paquetes ?? fila.total_jabas) > 0)
 
   return {
     ok: true,
@@ -76,7 +79,7 @@ export function ordenarProduccionLotes(
   }
 
   return filas.sort((a, b) => {
-    const porJabas = numeroSeguro(b.total_jabas) - numeroSeguro(a.total_jabas)
+    const porJabas = numeroSeguro(b.total_paquetes ?? b.total_jabas) - numeroSeguro(a.total_paquetes ?? a.total_jabas)
     if (porJabas !== 0) return porJabas
     return (
       compararTexto(a.lote_codigo, b.lote_codigo) ||

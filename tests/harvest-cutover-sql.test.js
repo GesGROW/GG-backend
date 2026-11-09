@@ -29,6 +29,10 @@ const read = (nombre) =>
   readFileSync(new URL('../supabase/migrations/' + nombre, import.meta.url), 'utf8')
 const llamadas = []
 const rutas = {
+  harvest_reportes_pda: [
+    ['p_campania_id', 'p_dni_operador', 'p_tipo', 'p_periodo'],
+    ['uuid', 'varchar', 'text', 'text']
+  ],
   harvest_obtener_snapshot: [
     ['p_campania_id', 'p_dni_operador'],
     ['uuid', 'varchar']
@@ -95,7 +99,7 @@ const remoto = crearSupabaseBackend({
       const data = (
         await db.query(
           `select ${nombre}(${tipos.map((t, i) => '$' + (i + 1) + '::' + t).join(',')}) resultado`,
-          claves.map((k) => parametros[k])
+          claves.map((k) => k === 'p_periodo' ? parametros[k] ?? 'HOY' : parametros[k])
         )
       ).rows[0].resultado
       return { data }
@@ -146,6 +150,17 @@ before(async () => {
   await db.query("select set_config('scc.test.auth',$1,false)", [SUP])
   await db.exec(read('202610140600_harvest_cutover.sql'))
   await db.exec(read('202610140610_harvest_proyecciones.sql'))
+  // This historical cutover fixture has only crates with unknown weights.
+  // Install the current report contract without changing its legacy facts.
+  await db.exec(`create schema harvest_bonos_privado;
+    grant usage on schema harvest_bonos_privado to anon,authenticated;
+    create role service_role;
+    do $$ declare d text; begin
+      select pg_get_viewdef('public.harvest_produccion_reportable'::regclass,true) into d;
+      execute 'create or replace view public.harvest_produccion_reportable as select b.*, ''JABA''::text tipo_recipiente, null::numeric peso_kg from (' || rtrim(d,'; '||chr(10)) || ') b';
+    end $$;`)
+  await db.exec(read('20261109142155_harvest_reportes_pda_paquetes.sql'))
+  await db.exec(read('20261109142553_harvest_reportes_pda_credencial_dispositivo.sql'))
 })
 after(async () => {
   await db.close()
@@ -687,13 +702,13 @@ test('activación exige el contrato administrativo y los reportes mantienen auto
     }),
     /no está autorizado/
   )
-  await assert.rejects(
-    remoto.obtenerProduccionDiaria({
+  assert.equal(
+    (await remoto.obtenerProduccionDiaria({
       campaniaId: c.id,
       dniOperador: OP,
       zonaHoraria: 'INEXISTENTE'
-    }),
-    /Zona horaria/
+    })).zona_horaria,
+    'America/Lima'
   )
   const permisos = (
     await db.query(

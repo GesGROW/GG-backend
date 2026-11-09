@@ -59,8 +59,33 @@ before(async () => {
   await db.exec(read('20261107051630_harvest_correcciones_recipientes_y_peso_vacio.sql'))
   await db.exec(read('20261109125850_harvest_resumen_corregir_agregado_lotes.sql'))
   await db.exec(read('20261109130537_harvest_reportes_periodo_campania.sql'))
+  await db.exec(read('20261109142155_harvest_reportes_pda_paquetes.sql'))
+  await db.exec(read('20261109142553_harvest_reportes_pda_credencial_dispositivo.sql'))
 })
 after(() => db.close())
+
+test('reportes PDA suman ambos recipientes y conservan la autorización por campaña', async () => {
+ await db.query("select set_config('request.jwt.claim.sub','',false)")
+ const consultar = (tipo, c=A, periodo='CAMPANIA') => call('harvest_reportes_pda($1,$2,$3,$4)',[c,OP,tipo,periodo])
+ const esperado = (await db.query(`select count(*)::int paquetes,
+  count(*) filter(where tipo_recipiente='JARRA')::int jarras,
+  count(*) filter(where coalesce(tipo_recipiente,'JABA')='JABA')::int jabas
+  from harvest_produccion_reportable where campania_id=$1`,[A])).rows[0]
+ const resumen=(await consultar('RESUMEN')).resumen
+ assert.equal(resumen.total_paquetes,esperado.paquetes)
+ assert.equal(resumen.total_jabas,esperado.jabas)
+ assert.equal(resumen.total_jarras,esperado.jarras)
+ for (const tipo of ['DIARIA','LOTES','RANKING']) {
+  const r=await consultar(tipo)
+  const filas=r.produccion ?? r.ranking
+  assert.equal(filas.reduce((s,f)=>s+f.total_paquetes,0),esperado.paquetes)
+  for (const f of filas) assert.equal(f.total_paquetes,f.total_jabas+f.total_jarras)
+ }
+ await assert.rejects(consultar('RESUMEN',crypto.randomUUID()))
+ await assert.rejects(consultar('RANKING',A,'OTRO'))
+ await assert.rejects(consultar('OTRO'))
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
+})
 
 
 test('jarras y jabas tienen umbrales independientes, peso parcial e historial', async () => {

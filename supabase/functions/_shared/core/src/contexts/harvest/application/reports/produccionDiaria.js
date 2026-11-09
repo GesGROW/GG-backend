@@ -1,3 +1,5 @@
+import { normalizarRecipientes } from './recipientes.js'
+
 export async function obtenerProduccionDiaria(
   dniOperador,
   consultar,
@@ -38,10 +40,11 @@ export function normalizarProduccionDiaria(data) {
     .map((fila) => ({
       fecha: normalizarFechaCalendario(fila.fecha),
       total_jabas: numeroSeguro(fila.total_jabas),
+      ...normalizarRecipientes(fila),
       total_cosechadores: numeroSeguro(fila.total_cosechadores),
       total_sesiones: numeroSeguro(fila.total_sesiones)
     }))
-    .filter((fila) => fila.fecha && fila.total_jabas > 0)
+    .filter((fila) => fila.fecha && (fila.total_paquetes ?? fila.total_jabas) > 0)
     .sort((a, b) => b.fecha.localeCompare(a.fecha))
 
   return {

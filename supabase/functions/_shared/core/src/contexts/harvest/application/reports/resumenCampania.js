@@ -1,3 +1,5 @@
+import { normalizarRecipientes } from './recipientes.js'
+
 export async function obtenerResumenCampania(
   dniOperador,
   consultar,
@@ -45,6 +47,7 @@ export function normalizarResumenCampania(data) {
     zona_horaria: String(data.zona_horaria ?? '').trim(),
     resumen: {
       total_jabas: numeroSeguro(resumen.total_jabas),
+      ...normalizarRecipientes(resumen),
       total_cosechadores: numeroSeguro(resumen.total_cosechadores),
       total_lotes: numeroSeguro(resumen.total_lotes),
       total_sesiones: numeroSeguro(resumen.total_sesiones),

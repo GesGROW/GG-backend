@@ -1,3 +1,5 @@
+import { normalizarRecipientes } from './recipientes.js'
+
 export async function obtenerRankingCosechadores(
   dniOperador,
   consultar,
@@ -32,9 +34,10 @@ export function normalizarRankingCosechadores(data) {
       cosechador_dni: String(fila.cosechador_dni ?? '').trim(),
       cosechador: String(fila.cosechador ?? '').trim(),
       total_jabas: numeroSeguro(fila.total_jabas),
+      ...normalizarRecipientes(fila),
       ultima_lectura: fila.ultima_lectura ? String(fila.ultima_lectura) : null
     }))
-    .filter((fila) => fila.total_jabas > 0)
+    .filter((fila) => (fila.total_paquetes ?? fila.total_jabas) > 0)
     .sort(compararRanking)
 
   return {
@@ -95,7 +98,7 @@ export function esErrorConexionRanking(error) {
 }
 
 function compararRanking(a, b) {
-  const porJabas = b.total_jabas - a.total_jabas
+  const porJabas = (b.total_paquetes ?? b.total_jabas) - (a.total_paquetes ?? a.total_jabas)
   if (porJabas !== 0) return porJabas
 
   const porNombre = normalizarTexto(a.cosechador).localeCompare(
