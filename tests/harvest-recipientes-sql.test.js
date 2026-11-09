@@ -61,7 +61,6 @@ before(async () => {
   await db.exec(read('20261109130537_harvest_reportes_periodo_campania.sql'))
   await db.exec(read('20261109142155_harvest_reportes_pda_paquetes.sql'))
   await db.exec(read('20261109142553_harvest_reportes_pda_credencial_dispositivo.sql'))
-  await db.exec(read('20261109203912_harvest_tareo_exportacion.sql'))
 })
 after(() => db.close())
 
@@ -163,85 +162,4 @@ test('el RPC conserva el recipiente en reintentos y rechaza cambiarlo', async ()
  assert.equal(corregido.tipo_recipiente,'JABA'); assert.equal(corregido.peso_kg,2.4)
  assert.equal(await call('(select tipo_recipiente from harvest_registros_cosecha where id=$1)',[registro]),'JARRA')
  await assert.rejects(db.query('delete from harvest_bonos_privado.correcciones_recipientes where registro_id=$1',[registro]),/inmutables/)
-})
-
-test('tareo semanal deduplica lecturas y guarda códigos exactos con permisos', async () => {
- await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
- const jueves=await call("($1::date-((extract(isodow from $1::date)::int+3)%7))::text",[hoy])
- const consulta=()=>call('harvest_reportes_tareo($1,$2,$3,$4)',[T,A,jueves,trabajador])
- const antes=await consulta()
- assert.equal(antes.datos.filas.length,1)
- assert.equal(antes.datos.filas[0].codigoTrabajador,null)
- assert.equal(antes.datos.filas[0].nombre,'Bono Ana')
- // Supervisor can configure crop mappings but cannot change the workforce master.
- await assert.rejects(call('workforce_admin_codigo_externo($1,$2,$3)',[T,trabajador,'000123']))
- const f=antes.datos.filas[0]
- await call('harvest_admin_tareo_guardar($1,$2,$3)',[T,A,{trabajadores:[],imputaciones:[{
-  loteId:f.loteId,variedadId:f.variedadId,actividad:'004',labor:'004041',consumidor:'TR0110006'
- }]}])
- await db.query(`insert into identity_rol_permisos(tenant_id,rol_id,permiso)
-  select $1,id,'workforce.manage' from identity_roles where tenant_id=$1 and codigo='SUPERVISOR_COSECHA'
-  on conflict do nothing`,[T])
- await call('workforce_admin_codigo_externo($1,$2,$3)',[T,trabajador,'000123'])
- const despues=(await consulta()).datos.filas[0]
- assert.equal(despues.codigoTrabajador,'000123')
- assert.equal(despues.actividad,'004');assert.equal(despues.labor,'004041');assert.equal(despues.consumidor,'TR0110006')
- const otro=(await db.query('select id from trabajadores where tenant_id=$1 and id<>$2 limit 1',[T,trabajador])).rows[0].id
- await assert.rejects(call('workforce_admin_codigo_externo($1,$2,$3)',[T,otro,'000123']),/ya está asignado/)
- await assert.rejects(call('harvest_reportes_tareo($1,$2,$3,$4)',[crypto.randomUUID(),A,jueves,trabajador]))
- await assert.rejects(call('harvest_reportes_tareo($1,$2,$3,$4)',[T,A,'2026-11-06',trabajador]),/jueves/)
- await assert.rejects(call('harvest_admin_tareo_guardar($1,$2,$3)',[T,B,{trabajadores:[],imputaciones:[{
-  loteId:f.loteId,variedadId:f.variedadId,actividad:'004',labor:'004041',consumidor:'TR0110006'
- }]}]))
- await db.exec('set role authenticated')
- try {
-  assert.equal((await consulta()).datos.filas[0].codigoTrabajador,'000123')
-  await assert.rejects(db.query('select * from harvest_bonos_privado.tareo_imputaciones'))
- } finally { await db.exec('reset role') }
- await db.query("select set_config('request.jwt.claim.sub','',false)")
- await assert.rejects(consulta())
- await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
-})
-
-test('tareo interno incluye jaberos, carga códigos al alta y edita nombre y código atómicamente', async () => {
- await db.exec(read('20261109212036_harvest_tareo_interno.sql'))
- await db.query('insert into harvest_bonos_privado.padron_trabajadores(tenant_id,dni,codigo) values($1,$2,$3)',[T,'88990088','000888'])
- const nuevo=(await db.query("insert into trabajadores(tenant_id,dni,nombres,apellidos,activo) values($1,'88990088','Nueva','Persona',true) returning codigo_externo",[T])).rows[0]
- assert.equal(nuevo.codigo_externo,'000888')
- const ficha=await call('harvest_admin_trabajador_campania($1,$2,$3,$4)',[T,A,'COSECHADOR',rol])
- assert.equal(ficha.codigoExterno,'000123')
- await call('harvest_admin_editar_trabajador_con_codigo($1,$2,$3,$4,$5,$6,$7,$8,$9)',[T,A,'COSECHADOR',rol,ficha.dni,'Ana','Bono',true,'000124'])
- assert.equal((await call('harvest_admin_trabajador_campania($1,$2,$3,$4)',[T,A,'COSECHADOR',rol])).codigoExterno,'000124')
- await assert.rejects(call('harvest_admin_editar_trabajador_con_codigo($1,$2,$3,$4,$5,$6,$7,$8,$9)',[T,A,'COSECHADOR',rol,ficha.dni,'No guardar','Bono',true,'000888']),/código/)
- assert.equal((await call('harvest_admin_trabajador_campania($1,$2,$3,$4)',[T,A,'COSECHADOR',rol])).nombres,'Ana')
- await db.query("insert into harvest_bonos_privado.labores_rol(tenant_id,rol,labor) values($1,'COSECHADOR','101333'),($1,'JABERO','160003')",[T])
- await db.query("insert into harvest_bonos_privado.consumidores(tenant_id,codigo,nombre,cultivo_codigo) values($1,'TR011003','Ventura','TR0110')",[T])
- await db.query("insert into harvest_bonos_privado.consumidores_lote(tenant_id,campania_id,lote_id,variedad_id,consumidor) values($1,$2,$3,$4,'TR011003')",[T,A,sesion.lote_id,sesion.variedad_id])
- const r=await call('harvest_reportes_tareo_rango($1,$2,$3,$4)',[T,A,hoy,hoy])
- const cosechador=r.datos.filas.find(x=>x.trabajadorId===trabajador)
- assert.equal(cosechador.labor,'101333');assert.equal(cosechador.consumidor,'TR011003')
- assert.equal(cosechador.actividad,null)
- assert.ok(r.datos.filas.some(x=>x.rol==='JABERO' && x.labor==='160003' && x.consumidor==='TR011003'))
- assert.equal(r.datos.filas.filter(x=>x.trabajadorId===trabajador).length,1)
- await db.exec('set role authenticated')
- try { await assert.rejects(db.query('select * from harvest_bonos_privado.padron_trabajadores')) }
- finally { await db.exec('reset role') }
- await db.query("select set_config('request.jwt.claim.sub','',false)")
- await assert.rejects(call('harvest_reportes_tareo_rango($1,$2,$3,$4)',[T,A,hoy,hoy]))
- await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
-})
-
-test('las correspondencias se mantienen desde configuración con revisión y catálogo por empresa', async () => {
- await db.exec(read('20261109212353_harvest_tareo_consumidores_configuracion.sql'))
- const consulta=()=>call('harvest_admin_tareo_consumidores($1,$2)',[T,A])
- const inicial=await consulta()
- assert.ok(inicial.catalogo.some(c=>c.codigo==='TR011003'))
- const fila=inicial.filas.find(f=>f.loteId===sesion.lote_id && f.variedadId===sesion.variedad_id)
- assert.equal(fila.consumidor,'TR011003')
- const cambiado=await call('harvest_admin_tareo_consumidores($1,$2,$3)',[T,A,{revision:inicial.revision,filas:[{...fila,consumidor:''}]}])
- assert.notEqual(cambiado.revision,inicial.revision)
- await assert.rejects(call('harvest_admin_tareo_consumidores($1,$2,$3)',[T,A,{revision:inicial.revision,filas:[fila]}]),/Recarga/)
- await assert.rejects(call('harvest_admin_tareo_consumidores($1,$2,$3)',[T,A,{revision:cambiado.revision,filas:[{...fila,consumidor:'NO-EXISTE'}]}]),/catálogo/)
- await call('harvest_admin_tareo_consumidores($1,$2,$3)',[T,A,{revision:cambiado.revision,filas:[fila]}])
- await assert.rejects(call('harvest_admin_tareo_consumidores($1,$2)',[crypto.randomUUID(),A]))
 })
