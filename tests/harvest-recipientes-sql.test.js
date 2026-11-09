@@ -48,9 +48,16 @@ before(async () => {
   rol = (await db.query("insert into trabajador_campania_rol(tenant_id,trabajador_id,campania_id,rol,activo) values($1,$2,$3,'COSECHADOR',true) returning id",[T,trabajador,A])).rows[0].id
   await db.exec(read('20261106154420_harvest_bonos_diarios.sql'))
   await db.exec(read('20261106160001_harvest_bonos_api_privada.sql'))
+  // Include the configured-lot subquery before the container migration, as in production.
+  await db.exec(`do $$ declare d text; begin
+   d:=pg_get_functiondef('public.harvest_proyectar_resumen(uuid,text)'::regprocedure);
+   execute replace(d,'''total_jabas'',count(*)',
+    '''total_lotes_configurados'',(select count(*) from public.lotes l where l.campania_id=p_campania),''total_jabas'',count(*)');
+  end $$;`)
   await db.exec(read('20261107035139_harvest_recipientes_y_bonos.sql'))
   await db.exec(read('20261107042436_harvest_reportes_paquetes_general.sql'))
   await db.exec(read('20261107051630_harvest_correcciones_recipientes_y_peso_vacio.sql'))
+  await db.exec(read('20261109125850_harvest_resumen_corregir_agregado_lotes.sql'))
 })
 after(() => db.close())
 
@@ -73,6 +80,9 @@ test('jarras y jabas tienen umbrales independientes, peso parcial e historial', 
  assert.equal(d.jabas,4);assert.equal(d.jarras,4)
  assert.equal(d.kgEstimados,12.4);assert.equal(d.lecturasSinPeso,1)
  assert.equal(d.bonoJabas,4);assert.equal(d.bonoJarras,1.5);assert.equal(d.bono,5.5)
+ const resumen=await call("harvest_proyectar_resumen($1,'America/Lima')",[A])
+ assert.equal(resumen.resumen.total_lotes_configurados,2)
+ assert.equal(resumen.resumen.total_jabas,4)
  const produccion=(await call('harvest_reportes_recipiente($1,$2,$3,null,null,$4,$4,$5)',[T,A,'PRODUCCION',hoy,'JARRA'])).datos
  assert.equal(produccion.metricas.totalJabas,4)
  assert.equal(produccion.metricas.kgEstimados,5.2)
