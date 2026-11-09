@@ -9,7 +9,7 @@ import {
   LoteYaAsignado,
   TicketNoEncontrado
 } from '@gesgrow/core/contexts/harvest/index.js'
-import { crearTicketsHarvest } from '@gesgrow/harvest-client-contracts/src/infrastructure/supabase/crearTicketsHarvest.js'
+import { crearTicketsHarvest } from './helpers/ticketsHarvest.js'
 import { crearSupabaseBackend } from '@gesgrow/harvest-client-contracts/src/infrastructure/supabase/backendAdapter.js'
 import { crearCasosDeUso } from '@gesgrow/harvest-client-contracts/src/application/crearCasosDeUso.js'
 import { crearAdaptadoresOffline } from '@gesgrow/harvest-client-contracts/src/infrastructure/offline/crearAdaptadoresOffline.js'

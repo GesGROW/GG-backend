@@ -10,7 +10,7 @@ import {
   TicketNoEncontrado,
   TicketYaUtilizado
 } from '@gesgrow/core/contexts/harvest/index.js'
-import { crearTicketsHarvest } from '@gesgrow/harvest-client-contracts/src/infrastructure/supabase/crearTicketsHarvest.js'
+import { crearTicketsHarvest } from './helpers/ticketsHarvest.js'
 
 const read = (ruta) => readFileSync(new URL(ruta, import.meta.url), 'utf8')
 const db = new PGlite()

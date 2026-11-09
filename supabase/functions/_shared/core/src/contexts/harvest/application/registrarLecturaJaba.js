@@ -1,3 +1,4 @@
+import { datosRecipiente } from '../domain/recipientes.js'
 import {
   validarInicioNoRechazado,
   validarTicketParaLectura
@@ -6,7 +7,7 @@ import {
 export function crearRegistrarLecturaJaba(dependencias) {
   // Compatibilidad antes del cutover explícito de la campaña.
   // Después del corte, Application usa crearSolicitarRegistroCosecha.
-  return async function registrarLecturaJaba({ operador, sesionLectura, codigo }) {
+  return async function registrarLecturaJaba({ operador, sesionLectura, codigo, tipoRecipiente }) {
     const jabero = await dependencias.workforce.obtenerTrabajador(
       sesionLectura.dni_jabero
     )
@@ -20,6 +21,7 @@ export function crearRegistrarLecturaJaba(dependencias) {
     const fechaHora = dependencias.ahora()
     const operacion = await dependencias.cosecha.registrarLectura(
       {
+        ...datosRecipiente(tipoRecipiente),
         id: lecturaId,
         sesion_id: sesionLectura.sesion_id,
         codigo_ticket: codigo,

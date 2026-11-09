@@ -1,3 +1,4 @@
+import { datosRecipiente } from '../domain/recipientes.js'
 export function crearSolicitarAsignacionHarvest(dependencias) {
   return async ({ operador, cosechador, codigoTicket }) => {
     const operacion = await dependencias.harvestLocal.reservarAsignacion({
@@ -18,11 +19,12 @@ export function crearSolicitarAsignacionHarvest(dependencias) {
 }
 
 export function crearSolicitarRegistroCosecha(dependencias) {
-  return async ({ operador, sesionLectura, codigo }) => {
+  return async ({ operador, sesionLectura, codigo, tipoRecipiente }) => {
     dependencias.workforce.validarJaberoParaLectura(
       await dependencias.workforce.obtenerTrabajador(sesionLectura.dni_jabero)
     )
     const { operacion, ticket } = await dependencias.harvestLocal.reservarConsumo({
+      ...datosRecipiente(tipoRecipiente),
       codigoTicket: codigo,
       sesionId: sesionLectura.sesion_id,
       registroId: dependencias.generarId(),

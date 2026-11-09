@@ -11,7 +11,7 @@ import {
   TicketYaUtilizado,
   SesionCosechaInvalida
 } from '@gesgrow/core/contexts/harvest/index.js'
-import { crearTicketsHarvest } from '@gesgrow/harvest-client-contracts/src/infrastructure/supabase/crearTicketsHarvest.js'
+import { crearTicketsHarvest } from './helpers/ticketsHarvest.js'
 import { crearSupabaseBackend } from '@gesgrow/harvest-client-contracts/src/infrastructure/supabase/backendAdapter.js'
 import { configurarBackend } from '@gesgrow/core/backend/backend.js'
 import { sincronizarPendientes } from '@gesgrow/harvest-client-contracts/src/offline/sync.js'

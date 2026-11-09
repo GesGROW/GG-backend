@@ -1,3 +1,4 @@
+import { datosRecipiente } from '../domain/recipientes.js'
 import { validarIdentificador } from '../domain/identificadoresTickets.js'
 import { ErrorPersistenciaTickets } from '../ports/tickets.js'
 
@@ -11,10 +12,12 @@ export function crearRegistrarCosecha({ repositorioTickets }) {
     sesionId,
     registroId,
     fechaHora,
-    operacionId
+    operacionId,
+    tipoRecipiente
   }) {
     const codigo = validarIdentificador(codigoTicket, 'codigoTicket')
     const catalogo = await repositorioTickets.registrarCosecha({
+      ...datosRecipiente(tipoRecipiente),
       codigoTicket: codigo,
       campaniaId: validarIdentificador(campania?.id, 'campaniaId'),
       dniOperador: validarIdentificador(operador?.dni, 'dniOperador'),
