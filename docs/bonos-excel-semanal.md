@@ -15,3 +15,9 @@ Los nombres vaciados durante la reversión previa permanecen como están: esta e
 La migración 20261111035453 recupera el esquema después de la reversión y añade la consulta monetaria semanal. No modifica producción, correcciones ni reglas de bonos. La carga del padrón se ejecuta separada del esquema.
 
 Ejemplo de numeraci?n: 5?11 noviembre de 2026 usa `202611-45`; 12?18 noviembre usa `202611-46`. El lunes 9 cambia la semana ISO del calendario, pero no inicia otra semana de este reporte.
+
+## Nombres y codificación
+
+Leer archivos de importación con UTF-8 explícito. En PowerShell, usar `Get-Content -Encoding UTF8`; al transportar JSON por consola, preferir escapes Unicode (`ensure_ascii=True`) para evitar conversiones de la página de códigos. No corregir nombres adivinando ni volver a interpretar texto UTF-8 como ANSI.
+
+El trigger `workforce_nombres_unicode` valida altas y cambios de nombres/apellidos, incluidos los imports directos. Rechaza secuencias habituales de mojibake, controles C1 y el carácter de reemplazo. Conserva las letras acentuadas y la ñ correctas. El portal muestra los nombres guardados; el Excel los convierte a mayúsculas sin cambiar su codificación UTF-8.

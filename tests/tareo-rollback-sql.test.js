@@ -302,3 +302,17 @@ test('primer consumidor semanal y actividad conservan bonos y permisos', async (
  await assert.rejects(consulta())
  await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
 })
+
+test('nombres Unicode conservan enie y tildes y rechazan importaciones mal codificadas', async () => {
+ await db.exec(read('20261111144311_workforce_nombres_unicode.sql'))
+ const original=(await db.query('select nombres,apellidos from trabajadores where id=$1',[trabajador])).rows[0]
+ const nombres='Mar\u00eda Jos\u00e9', apellidos='I\u00f1o Mu\u00f1oz'
+ await db.query('update trabajadores set nombres=$1,apellidos=$2 where id=$3',[nombres,apellidos,trabajador])
+ assert.deepEqual((await db.query('select nombres,apellidos from trabajadores where id=$1',[trabajador])).rows[0],{nombres,apellidos})
+ for(const roto of ['I\u00c3\u00b1o','I\u00c3\u2018O','Mu\ufffdoz','I\u00e3\u00b1o']) {
+  await assert.rejects(db.query('update trabajadores set apellidos=$1 where id=$2',[roto,trabajador]),/mal codificados/)
+  await assert.rejects(db.query("insert into trabajadores(tenant_id,dni,nombres,apellidos,activo) values($1,'99887766',$2,'Prueba',true)",[T,roto]),/mal codificados/)
+ }
+ assert.equal((await db.query('select apellidos from trabajadores where id=$1',[trabajador])).rows[0].apellidos,apellidos)
+ await db.query('update trabajadores set nombres=$1,apellidos=$2 where id=$3',[original.nombres,original.apellidos,trabajador])
+})
