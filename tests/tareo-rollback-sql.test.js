@@ -263,3 +263,21 @@ test('revierte el tareo y conserva exactamente funciones anteriores, producción
  assert.deepEqual((await report()).datos,bonos)
  assert.deepEqual(await call("(select jsonb_object_agg(proname,pg_get_functiondef(oid)) from pg_proc where oid in ('public.workforce_admin_dto(uuid,uuid)'::regprocedure,'public.workforce_cosecha_listar(uuid,jsonb)'::regprocedure,'public.harvest_admin_trabajador_campania(uuid,uuid,text,uuid)'::regprocedure))"),funcionesAntes)
 })
+
+test('Excel semanal usa el bono diario autorizado una sola vez y conserva filtros y reglas', async () => {
+ const antes=(await report(hoy,hoy)).datos
+ await db.exec(read('20261111035453_bonos_excel_semanal.sql'))
+ const r=await call('harvest_reportes_tareo_rango($1,$2,$3,$4,$5)',[T,A,hoy,hoy,trabajador])
+ const esperado=antes.detalle.find(f=>f.trabajadorId===trabajador)
+ assert.equal(r.datos.filas.length,1)
+ assert.equal(r.datos.filas[0].dias[0].bono,esperado.bonoJabas+esperado.bonoJarras)
+ assert.equal(r.datos.filas[0].totalSemanal,esperado.bono)
+ assert.equal(r.datos.totalBono,esperado.bono)
+ assert.deepEqual((await report(hoy,hoy)).datos,antes)
+ const sinFiltro=await call('harvest_reportes_tareo_rango($1,$2,$3,$4)',[T,A,hoy,hoy])
+ assert.equal(sinFiltro.datos.filas.reduce((s,f)=>s+f.totalSemanal,0),antes.totalBono)
+ assert.ok(sinFiltro.datos.filas.every(f=>Array.isArray(f.dias)))
+ await db.query("select set_config('request.jwt.claim.sub','',false)")
+ await assert.rejects(call('harvest_reportes_tareo_rango($1,$2,$3,$4)',[T,A,hoy,hoy]))
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
+})
