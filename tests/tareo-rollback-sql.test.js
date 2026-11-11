@@ -281,3 +281,24 @@ test('Excel semanal usa el bono diario autorizado una sola vez y conserva filtro
  await assert.rejects(call('harvest_reportes_tareo_rango($1,$2,$3,$4)',[T,A,hoy,hoy]))
  await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
 })
+
+test('primer consumidor semanal y actividad conservan bonos y permisos', async () => {
+ const antes=(await report(hoy,hoy)).datos
+ await db.exec(read('20261111053330_bonos_primer_consumidor_actividad.sql'))
+ await db.query("insert into harvest_bonos_privado.labores_rol(tenant_id,rol,labor,actividad) values($1,'COSECHADOR','101333','016') on conflict(tenant_id,rol) do update set actividad='016'",[T])
+ await db.query("insert into harvest_bonos_privado.consumidores(tenant_id,codigo,nombre,cultivo_codigo) values($1,'PRIMERO','Primero','TR0110') on conflict do nothing",[T])
+ await db.query(`insert into harvest_bonos_privado.consumidores_lote(tenant_id,campania_id,lote_id,variedad_id,consumidor)
+ select distinct $1::uuid,$2::uuid,p.lote_id,p.variedad_id,'PRIMERO' from harvest_produccion_reportable p where p.campania_id=$2
+ on conflict(tenant_id,campania_id,lote_id,variedad_id) do update set consumidor='PRIMERO'`,[T,A])
+ const consulta=()=>call('harvest_reportes_tareo_rango($1,$2,$3,$4,$5)',[T,A,hoy,hoy,trabajador])
+ let r=await consulta()
+ assert.equal(r.datos.filas[0].consumidor,'PRIMERO')
+ assert.equal(r.datos.filas[0].actividad,'016')
+ assert.equal(r.datos.totalBono,antes.detalle.filter(f=>f.trabajadorId===trabajador).reduce((s,f)=>s+f.bono,0))
+ await db.query('delete from harvest_bonos_privado.consumidores_lote where tenant_id=$1 and campania_id=$2',[T,A])
+ assert.equal((await consulta()).datos.filas[0].consumidor,'')
+ assert.deepEqual((await report(hoy,hoy)).datos,antes)
+ await db.query("select set_config('request.jwt.claim.sub','',false)")
+ await assert.rejects(consulta())
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[sub])
+})

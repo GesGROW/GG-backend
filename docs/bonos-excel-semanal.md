@@ -8,8 +8,10 @@ Si el filtro comprende varias semanas, se generan varias filas por trabajador. S
 
 Los códigos, el catálogo de consumidores y las correspondencias internas de la integración anterior se recuperan del respaldo privado. No se pide cargar archivos al descargar. El código se edita junto al nombre del cosechador/jabero, y los consumidores se mantienen en Configuración de campaña. Jerry Farms conserva TR0110006; Lote 02/Sekoya conserva la asignación provisional A, TR011005.
 
-Cuando una persona trabaja en varios consumidores durante una semana, el campo consumidor queda vacío. Se suma todo el bono diario sin inventar un reparto ni repetir importes. El código de actividad sigue vacío hasta confirmación. Los jaberos solo tendrán bonos si el cálculo existente les atribuye producción; no se les copia el bono del cosechador.
+El consumidor es el de la primera cosecha cronol?gica del trabajador en esa semana (jueves a mi?rcoles), dentro de la campa?a. Se consulta toda la semana incluso si el filtro empieza despu?s; empates se resuelven por fuente e identificador. Si esa primera cosecha no tiene correspondencia, queda vac?o. Se suman los bonos de todos los consumidores sin repetir importes. La actividad de cosecha es `016`. Los jaberos solo tendrán bonos si el cálculo existente les atribuye producción; no se les copia el bono del cosechador.
 
 Los nombres vaciados durante la reversión previa permanecen como están: esta entrega recupera los códigos y las correspondencias, sin volver a escribir los nombres personales. El catálogo y el padrón son privados, aislados por empresa y excluidos de Git.
 
 La migración 20261111035453 recupera el esquema después de la reversión y añade la consulta monetaria semanal. No modifica producción, correcciones ni reglas de bonos. La carga del padrón se ejecuta separada del esquema.
+
+Ejemplo de numeraci?n: 5?11 noviembre de 2026 usa `202611-45`; 12?18 noviembre usa `202611-46`. El lunes 9 cambia la semana ISO del calendario, pero no inicia otra semana de este reporte.
